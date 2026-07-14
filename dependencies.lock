@@ -26,7 +26,7 @@ dependencies:
   espressif/esp_bsp_generic:
     dependencies: []
     source:
-      path: /Users/sparky/engineering/esp/projects/pagerdeck/PocketSSH/components/espressif__esp_bsp_generic
+      path: /Users/sparky/engineering/projects/pagerdeck/PocketSSH/components/espressif__esp_bsp_generic
       type: local
     version: 3.0.2
   espressif/esp_lcd_gc9a01:
