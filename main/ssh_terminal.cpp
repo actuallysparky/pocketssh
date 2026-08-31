@@ -328,7 +328,10 @@ esp_err_t tdeck_sd_mount()
 
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
         .format_if_mount_failed = false,
-        .max_files = 8,
+        // A FAT file handle carries a sector buffer on this target.  Reserve
+        // only the writer plus one reader so serialrx can mount after LVGL
+        // has claimed its working memory.
+        .max_files = 2,
         .allocation_unit_size = 16 * 1024,
         .disk_status_check_enable = false,
         .use_one_fat = false,
@@ -3599,9 +3602,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     #else
     const char* logo =
         "\n"
-        "  ================================================\n"
-        "           POCKET SSH TERM - T-DECK PLUS\n"
-        "  ================================================\n"
+        "  ==== PocketSSH 2.0 / T-Deck Plus ====\n"
         "\n"
         "  Commands:\n"
         "   wifi - List configured WiFi profiles\n"
