@@ -97,7 +97,7 @@ idf_component_register(
 # cost for pre-expanded RGB565 animation frames.
 if(NOT TPAGER_DIAG AND NOT TPAGER_TARGET)
     target_add_binary_data(${COMPONENT_LIB}
-        "${CMAKE_CURRENT_LIST_DIR}/../assets/PocketSSH_Splash_Pack/assets/t-deck/pocket_ssh_t-deck_320x240.gif"
+        "${CMAKE_CURRENT_LIST_DIR}/../assets/PocketSSH_Splash_Pack/assets/t-deck/pocket_ssh_t-deck_runtime_160x120.gif"
         "BINARY"
         RENAME_TO "pocketssh_splash_gif")
 endif()

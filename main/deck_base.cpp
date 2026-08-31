@@ -139,13 +139,16 @@ void show_splash_screen()
     lv_obj_add_event_cb(splash_screen, splash_touch_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_flag(splash_screen, LV_OBJ_FLAG_CLICKABLE);
     
-    // The GIF is native 320x240.  RGB565 limits its decode framebuffer to
-    // 150 KiB while keeping it in the display's native color format.
+    // This runtime derivative comes directly from the supplied 320x240 GIF.
+    // Decoding its 160x120 RGB565 canvas needs only 37.5 KiB, then LVGL scales
+    // it twofold to the native screen.  That avoids starving the UI task on
+    // the ESP32-S3 while retaining the animated source artwork.
     pocketssh_splash_gif.data_size = static_cast<uint32_t>(
         pocketssh_splash_gif_end - pocketssh_splash_gif_start);
     splash_img = lv_gif_create(splash_screen);
     lv_gif_set_color_format(splash_img, LV_COLOR_FORMAT_RGB565);
     lv_gif_set_src(splash_img, &pocketssh_splash_gif);
+    lv_image_set_scale(splash_img, LV_SCALE_NONE * 2);
     lv_obj_align(splash_img, LV_ALIGN_CENTER, 0, 0);
     
     splash_start_tick = lv_tick_get();
