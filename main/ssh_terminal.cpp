@@ -4969,10 +4969,15 @@ bool SSHTerminal::save_pending_host_key()
     const std::string replacement = identity + pending_host_key_type + " " + pending_host_key_material + "\n";
     const std::string temporary = std::string(kKnownHostsPath) + ".tmp";
     FILE *file = std::fopen(temporary.c_str(), "wb");
-    const bool wrote = file != nullptr && std::fwrite(retained.data(), 1, retained.size(), file) == retained.size() &&
-                       std::fwrite(replacement.data(), 1, replacement.size(), file) == replacement.size();
-    const bool closed = file != nullptr && std::fclose(file) == 0;
-    if (!wrote || !closed || std::rename(temporary.c_str(), kKnownHostsPath) != 0) {
+    bool durable = file != nullptr;
+    if (durable && std::fwrite(retained.data(), 1, retained.size(), file) != retained.size()) durable = false;
+    if (durable && std::fwrite(replacement.data(), 1, replacement.size(), file) != replacement.size()) durable = false;
+    // A close alone can leave the FAT sector buffer unwritten. Flush the
+    // temporary file before its single-filesystem rename makes it visible as
+    // the trust store.
+    if (durable && (std::fflush(file) != 0 || ::fsync(fileno(file)) != 0)) durable = false;
+    if (file != nullptr && std::fclose(file) != 0) durable = false;
+    if (!durable || std::rename(temporary.c_str(), kKnownHostsPath) != 0) {
         std::remove(temporary.c_str());
         append_text("hostkey: atomic known_hosts update failed\n");
         return false;
