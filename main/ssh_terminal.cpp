@@ -5382,6 +5382,35 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
     }
 }
 
+void SSHTerminal::copy_visible_terminal()
+{
+    if (!ssh_connected) {
+        append_text("copy: SSH terminal is not active\n");
+        return;
+    }
+    std::string copied = terminal_core.plain_text();
+    constexpr size_t kClipboardLimit = 4096;
+    if (copied.size() > kClipboardLimit) copied.resize(kClipboardLimit);
+    device_clipboard = std::move(copied);
+    char line[64];
+    std::snprintf(line, sizeof(line), "copy: %u byte(s) in device clipboard\n",
+                  static_cast<unsigned>(device_clipboard.size()));
+    append_text(line);
+}
+
+void SSHTerminal::paste_device_clipboard()
+{
+    if (!ssh_connected || device_clipboard.empty()) {
+        append_text("paste: clipboard is empty or SSH is not active\n");
+        return;
+    }
+    if (terminal_core.bracketed_paste()) {
+        send_terminal_bytes("\x1b[200~" + device_clipboard + "\x1b[201~");
+    } else {
+        send_terminal_bytes(device_clipboard);
+    }
+}
+
 void SSHTerminal::ssh_receive_task(void* param)
 {
     SSHTerminal* terminal = (SSHTerminal*)param;
@@ -5974,6 +6003,9 @@ void SSHTerminal::create_side_panel()
     create_key_button("Esc", "\x1B", 350);
     create_key_button("Exit SSH", "EXIT", 385);
     create_key_button("Clear", "CLEAR", 420);
+    create_key_button("Reconnect", "RECONNECT", 455);
+    create_key_button("Copy", "COPY", 490);
+    create_key_button("Paste", "PASTE", 525);
 }
 
 void SSHTerminal::toggle_side_panel()
@@ -6016,6 +6048,19 @@ void SSHTerminal::send_special_key(const char* sequence)
     if (strcmp(sequence, "CLEAR") == 0) {
         clear_terminal();
         toggle_side_panel();
+        return;
+    }
+    if (strcmp(sequence, "RECONNECT") == 0) {
+        toggle_side_panel();
+        reconnect_last_session();
+        return;
+    }
+    if (strcmp(sequence, "COPY") == 0) {
+        copy_visible_terminal();
+        return;
+    }
+    if (strcmp(sequence, "PASTE") == 0) {
+        paste_device_clipboard();
         return;
     }
     

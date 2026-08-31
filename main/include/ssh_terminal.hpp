@@ -127,6 +127,7 @@ private:
     std::string connected_wifi_ssid;
     std::string connected_ssh_host;
     std::string reconnect_alias;
+    std::string device_clipboard;
     std::string pending_host_key_host;
     std::string pending_host_key_type;
     std::string pending_host_key_material;
@@ -164,6 +165,8 @@ private:
     void sync_terminal_geometry(bool notify_remote);
     bool verify_host_key(const char *host, int port, const std::string &strict_host_key_checking);
     bool save_pending_host_key();
+    void copy_visible_terminal();
+    void paste_device_clipboard();
     
     void load_history_from_nvs();
     void save_history_to_nvs();
