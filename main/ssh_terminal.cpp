@@ -5110,7 +5110,10 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     libssh2_keepalive_config(session, 1, static_cast<unsigned int>(server_alive_interval_seconds));
 
     append_text("Performing SSH handshake...\n");
-    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN);
+    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN) {
+        waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     
     if (rc) {
         ESP_LOGE(TAG, "SSH handshake failed: %d", rc);
@@ -5275,7 +5278,10 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
 
     append_text("Performing SSH handshake...\n");
     ESP_LOGW(TAG, "ssh key connect: handshake start");
-    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN);
+    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN) {
+        waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     
     if (rc) {
         ESP_LOGE(TAG, "SSH handshake failed: %d", rc);
@@ -5342,7 +5348,10 @@ esp_err_t SSHTerminal::ssh_authenticate(const char* username, const char* passwo
     append_text("...\n");
 
     int rc;
-    while ((rc = libssh2_userauth_password(session, username, password)) == LIBSSH2_ERROR_EAGAIN);
+    while ((rc = libssh2_userauth_password(session, username, password)) == LIBSSH2_ERROR_EAGAIN) {
+        waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     
     if (rc) {
         char *err_msg;
@@ -5367,7 +5376,10 @@ esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char*
     while ((rc = libssh2_userauth_publickey_frommemory(session, username, strlen(username),
                                                          NULL, 0,  // public key (optional)
                                                          privkey_data, privkey_len,
-                                                         NULL)) == LIBSSH2_ERROR_EAGAIN);  // no passphrase
+                                                         NULL)) == LIBSSH2_ERROR_EAGAIN) {  // no passphrase
+        waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     
     if (rc) {
         char *err_msg;
@@ -5390,6 +5402,7 @@ esp_err_t SSHTerminal::ssh_open_channel()
     while ((channel = libssh2_channel_open_session(session)) == NULL &&
            libssh2_session_last_error(session, NULL, NULL, 0) == LIBSSH2_ERROR_EAGAIN) {
         waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     if (channel == NULL) {
@@ -5407,6 +5420,7 @@ esp_err_t SSHTerminal::ssh_open_channel()
                                                   NULL, 0, columns, rows,
                                                   width_px, height_px)) == LIBSSH2_ERROR_EAGAIN) {
         waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
     if (rc) {
@@ -5416,6 +5430,7 @@ esp_err_t SSHTerminal::ssh_open_channel()
 
     while ((rc = libssh2_channel_shell(channel)) == LIBSSH2_ERROR_EAGAIN) {
         waitsocket(ssh_socket, session);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
     if (rc) {
