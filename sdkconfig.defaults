@@ -1,0 +1,5 @@
+# Required for the Launcher-safe SD artifact name: PocketSSH-2.0.bin.
+# Heap storage avoids adding a long-filename buffer to serial receiver stacks.
+# CONFIG_FATFS_LFN_NONE is not set
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=32
