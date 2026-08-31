@@ -157,6 +157,9 @@ private:
     int32_t touch_scrub_last_y;
     int32_t touch_scrub_accum_x;
     int32_t terminal_output_touch_scroll_y;
+    bool terminal_grid_touch_scroll_active;
+    int32_t terminal_grid_touch_last_y;
+    int32_t terminal_grid_touch_accum_y;
     
     void update_terminal_display();
     void rebuild_terminal_grid();

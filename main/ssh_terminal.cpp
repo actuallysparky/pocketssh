@@ -3272,7 +3272,10 @@ SSHTerminal::SSHTerminal()
       touch_scrub_last_x(0),
       touch_scrub_last_y(0),
       touch_scrub_accum_x(0),
-      terminal_output_touch_scroll_y(0)
+      terminal_output_touch_scroll_y(0),
+      terminal_grid_touch_scroll_active(false),
+      terminal_grid_touch_last_y(0),
+      terminal_grid_touch_accum_y(0)
 {
     vTaskDelay(pdMS_TO_TICKS(100));
     load_theme_color_from_nvs();
@@ -3697,6 +3700,8 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_SCROLL, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_SCROLL_END, this);
+    lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_RELEASED, this);
     lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
 
@@ -4267,6 +4272,41 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
     }
 
     const lv_event_code_t code = lv_event_get_code(e);
+    if (target == terminal->terminal_grid && terminal->ssh_connected) {
+        lv_indev_t *indev = lv_indev_get_act();
+        lv_point_t point = {};
+        if (indev != nullptr) lv_indev_get_point(indev, &point);
+
+        if (code == LV_EVENT_PRESSED) {
+            terminal->terminal_grid_touch_scroll_active = true;
+            terminal->terminal_grid_touch_last_y = point.y;
+            terminal->terminal_grid_touch_accum_y = 0;
+            return;
+        }
+        if (code == LV_EVENT_PRESSING && terminal->terminal_grid_touch_scroll_active) {
+            terminal->terminal_grid_touch_accum_y += point.y - terminal->terminal_grid_touch_last_y;
+            terminal->terminal_grid_touch_last_y = point.y;
+            const lv_font_t *font = terminal->terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
+            const int line_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
+            const int steps = terminal->terminal_grid_touch_accum_y / line_height;
+            if (steps != 0) {
+                // Pulling down exposes older lines; pushing up returns toward
+                // the live screen.  Keep the grid itself pinned while the
+                // terminal core supplies the scrolling viewport.
+                terminal->scroll_terminal_output(steps);
+                terminal->terminal_grid_touch_accum_y -= steps * line_height;
+                lv_obj_scroll_to_y(target, 0, LV_ANIM_OFF);
+            }
+            return;
+        }
+        if (code == LV_EVENT_RELEASED || code == LV_EVENT_SCROLL_END) {
+            terminal->terminal_grid_touch_scroll_active = false;
+            terminal->terminal_grid_touch_accum_y = 0;
+            lv_obj_scroll_to_y(target, 0, LV_ANIM_OFF);
+            return;
+        }
+    }
+
     if (code == LV_EVENT_SCROLL) {
         terminal->terminal_output_touch_scroll_y = lv_obj_get_scroll_y(target);
         return;
