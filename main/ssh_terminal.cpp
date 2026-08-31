@@ -3810,7 +3810,8 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     #else
     const char* logo =
         "\n"
-        "  ==== PocketSSH 2.0 / T-Deck Plus ====\n"
+        "  PocketSSH 2.0\n"
+        "  T-Deck Plus\n"
         "\n"
         "  Commands:\n"
         "   wifi - List configured WiFi profiles\n"
