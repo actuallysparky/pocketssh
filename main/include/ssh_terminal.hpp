@@ -9,6 +9,8 @@
 
 #include "lvgl.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -116,6 +118,7 @@ private:
     int ssh_socket;
     LIBSSH2_SESSION *session;
     LIBSSH2_CHANNEL *channel;
+    SemaphoreHandle_t ssh_tx_mutex;
     
     char* hostname;
     int port_number;

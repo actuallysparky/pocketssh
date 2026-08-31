@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include "lwip/sockets.h"
@@ -3255,6 +3256,7 @@ SSHTerminal::SSHTerminal()
       ssh_socket(-1),
       session(NULL),
       channel(NULL),
+      ssh_tx_mutex(xSemaphoreCreateMutex()),
       hostname(NULL),
       port_number(22),
       connected_wifi_ssid(""),
@@ -3310,6 +3312,10 @@ SSHTerminal::~SSHTerminal()
         if (history_needs_save) {
             save_history_to_nvs();
         }
+    }
+    if (ssh_tx_mutex) {
+        vSemaphoreDelete(ssh_tx_mutex);
+        ssh_tx_mutex = NULL;
     }
 }
 
@@ -5286,6 +5292,11 @@ esp_err_t SSHTerminal::disconnect()
 {
     ssh_connected = false;
     connected_ssh_host.clear();
+
+    // Wait briefly for an in-flight keyboard/paste/overlay write before
+    // releasing libssh2 channel state.  A failed lock still leaves the
+    // connection marked inactive, which prevents any new transmit attempt.
+    const bool tx_locked = ssh_tx_mutex && xSemaphoreTake(ssh_tx_mutex, pdMS_TO_TICKS(250)) == pdTRUE;
     
     if (channel) {
         libssh2_channel_free(channel);
@@ -5304,6 +5315,7 @@ esp_err_t SSHTerminal::disconnect()
     }
 
     libssh2_exit();
+    if (tx_locked) xSemaphoreGive(ssh_tx_mutex);
     
     if (display_lock(0)) {
         if (terminal_grid) lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
@@ -5367,6 +5379,15 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
         return;
     }
 
+    if (ssh_tx_mutex == nullptr || xSemaphoreTake(ssh_tx_mutex, pdMS_TO_TICKS(250)) != pdTRUE) {
+        ESP_LOGW(TAG, "terminal input write deferred: transmit path busy");
+        return;
+    }
+    if (!ssh_connected || channel == nullptr) {
+        xSemaphoreGive(ssh_tx_mutex);
+        return;
+    }
+
     size_t written = 0;
     int retries = 0;
     while (written < bytes.size() && retries < 20) {
@@ -5379,6 +5400,7 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
         }
         if (result <= 0) {
             ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(result));
+            xSemaphoreGive(ssh_tx_mutex);
             return;
         }
         written += static_cast<size_t>(result);
@@ -5388,6 +5410,7 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
         ESP_LOGW(TAG, "terminal input write incomplete: %d/%d",
                  static_cast<int>(written), static_cast<int>(bytes.size()));
     }
+    xSemaphoreGive(ssh_tx_mutex);
 }
 
 void SSHTerminal::copy_visible_terminal()
@@ -5398,11 +5421,12 @@ void SSHTerminal::copy_visible_terminal()
     }
     std::string copied = terminal_core.plain_text();
     constexpr size_t kClipboardLimit = 4096;
-    if (copied.size() > kClipboardLimit) copied.resize(kClipboardLimit);
+    const bool truncated = copied.size() > kClipboardLimit;
+    if (truncated) copied.resize(kClipboardLimit);
     device_clipboard = std::move(copied);
     char line[64];
-    std::snprintf(line, sizeof(line), "copy: %u byte(s) in device clipboard\n",
-                  static_cast<unsigned>(device_clipboard.size()));
+    std::snprintf(line, sizeof(line), "copy: %u byte(s) in device clipboard%s\n",
+                  static_cast<unsigned>(device_clipboard.size()), truncated ? " (truncated)" : "");
     append_text(line);
 }
 
@@ -6097,7 +6121,9 @@ void SSHTerminal::send_special_key(const char* sequence)
     }
     
     if (ssh_connected && channel) {
-        libssh2_channel_write(channel, sequence, strlen(sequence));
+        // Overlay-generated input shares the same bounded transmit path as
+        // keyboard input, including its partial-write and EAGAIN handling.
+        send_terminal_bytes(sequence);
         ESP_LOGI(TAG, "Sent special key sequence");
     } else {
         ESP_LOGW(TAG, "Cannot send special key - not connected");
