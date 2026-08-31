@@ -179,6 +179,30 @@ void test_erase_insert_and_resize()
     assert(term.row(1)[0].codepoint == 'I');
 }
 
+void test_less_alternate_screen_and_live_redraw_streams()
+{
+    TerminalCore term(12, 3, 8);
+    // Representative pager entry: preserve the normal shell, clear the
+    // alternate screen, and accept an arbitrary split stream.
+    feed_bytewise(term, "shell$ ");
+    feed_bytewise(term, "\x1b[?1049h\x1b[H\x1b[2Jfirst\r\nsecond");
+    assert(term.alternate_screen_active());
+    assert(term.row(0)[0].codepoint == 'f');
+    assert(term.row(1)[0].codepoint == 's');
+    feed_bytewise(term, "\x1b[?1049l");
+    assert(!term.alternate_screen_active());
+    assert(term.row(0)[0].codepoint == 's');
+    assert(term.row(0)[5].codepoint == '$');
+
+    // A live monitor rewrites a fixed row with CUP+CR rather than appending.
+    feed_bytewise(term, "\x1b[Hcpu 10%\x1b[2;1Hmem 20%");
+    feed_bytewise(term, "\x1b[Hcpu 99%");
+    assert(term.row(0)[0].codepoint == 'c');
+    assert(term.row(0)[4].codepoint == '9');
+    assert(term.row(0)[6].codepoint == '%');
+    assert(term.row(1)[0].codepoint == 'm');
+}
+
 }  // namespace
 
 int main()
@@ -191,6 +215,7 @@ int main()
     test_external_scrollback_storage_ring();
     test_utf8_replacement_and_viewport_copy();
     test_erase_insert_and_resize();
+    test_less_alternate_screen_and_live_redraw_streams();
     test_form_feed_clears_and_homes();
     test_ignored_control_sequences_are_bounded();
     std::cout << "terminal_core tests passed\n";
