@@ -6160,6 +6160,22 @@ void SSHTerminal::create_side_panel()
     create_key_button("Reconnect", "RECONNECT", 455);
     create_key_button("Copy", "COPY", 490);
     create_key_button("Paste", "PASTE", 525);
+    create_key_button("PgUp", "\x1b[5~", 560);
+    create_key_button("PgDn", "\x1b[6~", 595);
+    create_key_button("Insert", "\x1b[2~", 630);
+    create_key_button("Delete", "\x1b[3~", 665);
+    create_key_button("F1", "\x1bOP", 700);
+    create_key_button("F2", "\x1bOQ", 735);
+    create_key_button("F3", "\x1bOR", 770);
+    create_key_button("F4", "\x1bOS", 805);
+    create_key_button("F5", "\x1b[15~", 840);
+    create_key_button("F6", "\x1b[17~", 875);
+    create_key_button("F7", "\x1b[18~", 910);
+    create_key_button("F8", "\x1b[19~", 945);
+    create_key_button("F9", "\x1b[20~", 980);
+    create_key_button("F10", "\x1b[21~", 1015);
+    create_key_button("F11", "\x1b[23~", 1050);
+    create_key_button("F12", "\x1b[24~", 1085);
 }
 
 void SSHTerminal::toggle_side_panel()
@@ -6167,7 +6183,6 @@ void SSHTerminal::toggle_side_panel()
     if (!side_panel) return;
     
     if (lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_clear_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
     } else {
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
