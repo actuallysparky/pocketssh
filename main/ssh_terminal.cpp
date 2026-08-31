@@ -53,10 +53,25 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <cerrno>
 
 static const char *TAG = "SSH_TERMINAL";
+
+// libssh2's nonblocking mode does not change the transport descriptor.  The
+// underlying lwIP socket must be nonblocking too, otherwise a channel read
+// can still stall the SSH task indefinitely while an interactive shell is
+// idle.
+static bool make_socket_nonblocking(int socket_fd)
+{
+    const int flags = fcntl(socket_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        ESP_LOGE(TAG, "failed to make SSH socket nonblocking: errno=%d", errno);
+        return false;
+    }
+    return true;
+}
 
 #if defined(TPAGER_TARGET)
 extern "C" void tpager_request_shutdown(void);
@@ -5165,6 +5180,14 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
         return ESP_FAIL;
     }
 
+    if (!make_socket_nonblocking(ssh_socket)) {
+        append_text("ERROR: unable to configure nonblocking SSH socket\n");
+        close(ssh_socket);
+        ssh_socket = -1;
+        libssh2_exit();
+        return ESP_FAIL;
+    }
+
     ESP_LOGI(TAG, "Socket connected");
     append_text("Socket connected, initializing SSH session...\n");
     log_heap_snapshot("pre_session_init");
@@ -5326,6 +5349,14 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
         if (err == EHOSTUNREACH || err == ECONNABORTED || err == ENETUNREACH || err == ETIMEDOUT) {
             append_text("Hint: target likely unreachable from current WiFi/network segment.\n");
         }
+        close(ssh_socket);
+        ssh_socket = -1;
+        libssh2_exit();
+        return ESP_FAIL;
+    }
+
+    if (!make_socket_nonblocking(ssh_socket)) {
+        append_text("ERROR: unable to configure nonblocking SSH socket\n");
         close(ssh_socket);
         ssh_socket = -1;
         libssh2_exit();
