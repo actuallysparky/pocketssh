@@ -4258,6 +4258,16 @@ void SSHTerminal::handle_key_input(char key)
 
 void SSHTerminal::run_control_command(const std::string &line)
 {
+    // Serial control is the non-touch test/automation equivalent of typing
+    // on the physical keyboard.  Once a remote channel is active, inject the
+    // complete line as remote bytes instead of merely submitting an empty
+    // Enter key through handle_key_input().  Local commands, including the
+    // SD receiver, remain available only while disconnected.
+    if (ssh_connected) {
+        send_terminal_bytes(line);
+        send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Enter}));
+        return;
+    }
     current_input = line;
     cursor_pos = current_input.length();
     cursor_visible = true;
