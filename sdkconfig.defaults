@@ -3,3 +3,12 @@
 # CONFIG_FATFS_LFN_NONE is not set
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=32
+
+# The T-Deck Plus uses the ESP32-S3 embedded octal PSRAM interface. Keep
+# missing-RAM recovery enabled in the local sdkconfig so Launcher-safe builds
+# continue to boot on a board with an unavailable RAM chip.
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_CLK_IO=30
+CONFIG_SPIRAM_CS_IO=26
+CONFIG_SPIRAM_SPEED_40M=y
