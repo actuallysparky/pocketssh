@@ -1428,7 +1428,9 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     terminal->append_text("serialrx: waiting for BEGIN <size> <crc32hex>\n");
     terminal->append_text("serialrx: send DATA <hex> lines, then END\n");
     ESP_LOGI(TAG, "serialrx ready: target=%s", target_path.c_str());
-    ESP_LOGI(TAG, "POCKETCTL serialrx_ready target=%s", target_path.c_str());
+    // The T-Deck serial console runs at warning level in Launcher use; keep
+    // this host-protocol marker visible so the sender can begin streaming.
+    ESP_LOGW(TAG, "POCKETCTL serialrx_ready target=%s", target_path.c_str());
 
     std::string line;
     if (!serial_read_line_with_timeout(30000, &line)) {
