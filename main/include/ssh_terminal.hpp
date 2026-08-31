@@ -10,6 +10,7 @@
 #include "lvgl.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include <atomic>
 #include <cstdint>
@@ -128,6 +129,7 @@ private:
     LIBSSH2_SESSION *session;
     LIBSSH2_CHANNEL *channel;
     SemaphoreHandle_t ssh_tx_mutex;
+    QueueHandle_t ssh_input_queue;
     
     char* hostname;
     int port_number;

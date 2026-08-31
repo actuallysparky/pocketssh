@@ -3279,6 +3279,7 @@ SSHTerminal::SSHTerminal()
       session(NULL),
       channel(NULL),
       ssh_tx_mutex(xSemaphoreCreateMutex()),
+      ssh_input_queue(xQueueCreate(1024, sizeof(uint8_t))),
       hostname(NULL),
       port_number(22),
       connected_wifi_ssid(""),
@@ -3366,6 +3367,10 @@ SSHTerminal::~SSHTerminal()
     if (ssh_tx_mutex) {
         vSemaphoreDelete(ssh_tx_mutex);
         ssh_tx_mutex = NULL;
+    }
+    if (ssh_input_queue) {
+        vQueueDelete(ssh_input_queue);
+        ssh_input_queue = NULL;
     }
     if (terminal_scrollback_storage != nullptr) {
         heap_caps_free(terminal_scrollback_storage);
@@ -5551,6 +5556,10 @@ esp_err_t SSHTerminal::disconnect()
         ssh_socket = -1;
     }
 
+    if (ssh_input_queue) {
+        xQueueReset(ssh_input_queue);
+    }
+
     libssh2_exit();
     if (tx_locked) xSemaphoreGive(ssh_tx_mutex);
     
@@ -5574,40 +5583,12 @@ bool SSHTerminal::is_connected()
 
 void SSHTerminal::send_command(const char* cmd)
 {
-    if (!channel) {
+    if (!ssh_connected || !channel || cmd == nullptr) {
         return;
     }
-    
     bytes_received = 0;
-
-    std::string full_cmd = std::string(cmd) + "\n";
-    ssize_t nwritten = 0;
-    int retry_count = 0;
-    const int MAX_RETRIES = 20;
-    
-    ESP_LOGW(TAG, "ssh command: sending '%s'", cmd ? cmd : "<null>");
-    
-    while (nwritten < (ssize_t)full_cmd.length() && retry_count < MAX_RETRIES) {
-        ssize_t n = libssh2_channel_write(channel, full_cmd.c_str() + nwritten, 
-                                          full_cmd.length() - nwritten);
-        if (n == LIBSSH2_ERROR_EAGAIN) {
-            retry_count++;
-            vTaskDelay(1);
-            continue;
-        }
-        if (n < 0) {
-            ESP_LOGE(TAG, "Failed to write to channel: %d", (int)n);
-            break;
-        }
-        nwritten += n;
-        retry_count = 0;  // Forward progress reset.
-    }
-    
-    if (nwritten < (ssize_t)full_cmd.length()) {
-        ESP_LOGW(TAG, "Command partially sent (%d/%d bytes)", (int)nwritten, (int)full_cmd.length());
-    }
-
-    ESP_LOGW(TAG, "ssh command: sent %d bytes", (int)nwritten);
+    ESP_LOGW(TAG, "ssh command: queued '%s'", cmd);
+    send_terminal_bytes(std::string(cmd) + "\n");
 }
 
 void SSHTerminal::send_terminal_bytes(const std::string &bytes)
@@ -5616,46 +5597,16 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
         return;
     }
 
-    if (ssh_tx_mutex == nullptr || xSemaphoreTake(ssh_tx_mutex, pdMS_TO_TICKS(250)) != pdTRUE) {
-        ESP_LOGW(TAG, "terminal input write deferred: transmit path busy");
+    if (ssh_input_queue == nullptr) {
         return;
     }
-    if (!ssh_connected || channel == nullptr) {
-        xSemaphoreGive(ssh_tx_mutex);
-        return;
-    }
-
-    size_t written = 0;
-    while (written < bytes.size()) {
-        const ssize_t result = libssh2_channel_write(
-            channel, bytes.data() + written, bytes.size() - written);
-        if (result == LIBSSH2_ERROR_EAGAIN) {
-            // libssh2 is nonblocking.  Retrying on the next scheduler tick
-            // can exhaust the old short retry budget before TCP is writable,
-            // silently losing a physical keypress.  Wait for the direction
-            // libssh2 requests while retaining session ownership.
-            if (!ssh_connected || session == nullptr || ssh_socket < 0) {
-                break;
-            }
-            const int ready = waitsocket(ssh_socket, session);
-            if (ready < 0) {
-                ESP_LOGW(TAG, "terminal input socket wait failed: %d", errno);
-                break;
-            }
-            continue;
-        }
-        if (result <= 0) {
-            ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(result));
-            xSemaphoreGive(ssh_tx_mutex);
+    for (const unsigned char byte : bytes) {
+        const uint8_t queued = byte;
+        if (xQueueSend(ssh_input_queue, &queued, pdMS_TO_TICKS(100)) != pdTRUE) {
+            ESP_LOGW(TAG, "terminal input queue full; dropped byte 0x%02x", queued);
             return;
         }
-        written += static_cast<size_t>(result);
     }
-    if (written != bytes.size()) {
-        ESP_LOGW(TAG, "terminal input write incomplete: %d/%d",
-                 static_cast<int>(written), static_cast<int>(bytes.size()));
-    }
-    xSemaphoreGive(ssh_tx_mutex);
 }
 
 void SSHTerminal::copy_visible_terminal()
@@ -5697,8 +5648,9 @@ void SSHTerminal::ssh_receive_task(void* param)
     ESP_LOGW(TAG, "ssh rx: task started");
 
     while (terminal->ssh_connected && terminal->channel) {
-        // libssh2 has one session-wide nonblocking state machine; keyboard
-        // writes from the keypad task must never race this receive call.
+        // This task is the sole owner of libssh2 after connection setup.  The
+        // keypad only enqueues bytes, so interactive input cannot race a
+        // receive, keepalive, or session state transition.
         if (terminal->ssh_tx_mutex == nullptr ||
             xSemaphoreTake(terminal->ssh_tx_mutex, pdMS_TO_TICKS(25)) != pdTRUE) {
             vTaskDelay(1);
@@ -5708,7 +5660,35 @@ void SSHTerminal::ssh_receive_task(void* param)
             xSemaphoreGive(terminal->ssh_tx_mutex);
             break;
         }
-        rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
+        bool sent_input = false;
+        uint8_t outbound = 0;
+        // A missing queue means the terminal cannot accept input safely.  Do
+        // not pass a null queue handle to FreeRTOS; leave the session alive
+        // and report the condition in the usual receive path instead.
+        while (terminal->ssh_input_queue != nullptr &&
+               xQueueReceive(terminal->ssh_input_queue, &outbound, 0) == pdTRUE) {
+            while (true) {
+                const char byte = static_cast<char>(outbound);
+                const ssize_t write_rc = libssh2_channel_write(terminal->channel, &byte, 1);
+                if (write_rc == 1) {
+                    sent_input = true;
+                    break;
+                }
+                if (write_rc == LIBSSH2_ERROR_EAGAIN && terminal->session != nullptr &&
+                    terminal->ssh_socket >= 0 && terminal->ssh_connected) {
+                    if (terminal->waitsocket(terminal->ssh_socket, terminal->session) >= 0) {
+                        continue;
+                    }
+                }
+                ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(write_rc));
+                terminal->ssh_connected = false;
+                break;
+            }
+            if (!terminal->ssh_connected) break;
+        }
+        rc = terminal->ssh_connected
+            ? libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1)
+            : LIBSSH2_ERROR_SOCKET_DISCONNECT;
         const bool channel_eof = libssh2_channel_eof(terminal->channel) != 0;
         xSemaphoreGive(terminal->ssh_tx_mutex);
         
@@ -5718,7 +5698,7 @@ void SSHTerminal::ssh_receive_task(void* param)
             vTaskDelay(1);
         } else if (rc == LIBSSH2_ERROR_EAGAIN) {
             terminal->flush_display_buffer();
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(sent_input ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(100));
         } else if (rc < 0) {
             ESP_LOGE(TAG, "Read error: %d", (int)rc);
             break;
