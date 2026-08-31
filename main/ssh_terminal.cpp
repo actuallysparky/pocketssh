@@ -85,6 +85,36 @@ static bool make_socket_nonblocking(int socket_fd)
     return true;
 }
 
+// The ESP-IDF libssh2 transport occasionally reaches recv() with a socket
+// that its session loop believes is nonblocking but which lwIP still treats
+// as eligible to wait.  Force the per-call lwIP nonblocking flag as well,
+// so no libssh2 operation may wedge the sole SSH session worker.
+static LIBSSH2_RECV_FUNC(pocketssh_nonblocking_recv)
+{
+    (void)abstract;
+    const ssize_t result = recv(socket, buffer, length, flags | MSG_DONTWAIT);
+    if (result >= 0) return result;
+    const int error = errno;
+    return (error == EAGAIN || error == EWOULDBLOCK || error == EINTR) ? -EAGAIN : -error;
+}
+
+static LIBSSH2_SEND_FUNC(pocketssh_nonblocking_send)
+{
+    (void)abstract;
+    const ssize_t result = send(socket, buffer, length, flags | MSG_DONTWAIT);
+    if (result >= 0) return result;
+    const int error = errno;
+    return (error == EAGAIN || error == EWOULDBLOCK || error == EINTR) ? -EAGAIN : -error;
+}
+
+static void configure_nonblocking_libssh_transport(LIBSSH2_SESSION *session)
+{
+    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_RECV,
+                                  reinterpret_cast<libssh2_cb_generic *>(pocketssh_nonblocking_recv));
+    libssh2_session_callback_set2(session, LIBSSH2_CALLBACK_SEND,
+                                  reinterpret_cast<libssh2_cb_generic *>(pocketssh_nonblocking_send));
+}
+
 #if defined(TPAGER_TARGET)
 extern "C" void tpager_request_shutdown(void);
 #endif
@@ -5227,6 +5257,7 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
         return ESP_FAIL;
     }
 
+    configure_nonblocking_libssh_transport(session);
     libssh2_session_set_blocking(session, 0);
     server_alive_interval_seconds = std::max(0, server_alive_interval);
     server_alive_count_max = std::max(1, server_alive_count);
@@ -5402,6 +5433,7 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
         return ESP_FAIL;
     }
 
+    configure_nonblocking_libssh_transport(session);
     libssh2_session_set_blocking(session, 0);
     server_alive_interval_seconds = std::max(0, server_alive_interval);
     server_alive_count_max = std::max(1, server_alive_count);
