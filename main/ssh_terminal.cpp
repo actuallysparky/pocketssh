@@ -5147,10 +5147,10 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     append_text("SSH channel opened - connected!\n");
     ssh_connected = true;
     terminal_core.reset();
-    if (display_lock(0)) {
-        update_terminal_display();
-        display_unlock();
-    }
+    // The grid is already empty at session start. Avoid rebuilding every
+    // blank row from the serial-control task; the receive path will render
+    // only rows touched by the first server bytes.
+    terminal_core.clear_dirty();
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
@@ -5319,10 +5319,7 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     ESP_LOGW(TAG, "ssh key connect: channel opened connected");
     ssh_connected = true;
     terminal_core.reset();
-    if (display_lock(0)) {
-        update_terminal_display();
-        display_unlock();
-    }
+    terminal_core.clear_dirty();
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
