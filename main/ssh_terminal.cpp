@@ -5799,7 +5799,12 @@ void SSHTerminal::ssh_receive_task(void* param)
         rc = terminal->ssh_connected && socket_readable
             ? libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1)
             : (terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT);
-        const bool channel_eof = libssh2_channel_eof(terminal->channel) != 0;
+        // Do not probe libssh2_channel_eof() on an idle transport.  The
+        // ESP-IDF port can block inside that probe even after the session
+        // and raw socket were configured nonblocking, which freezes this
+        // task before it can service the input queue.  A zero-byte read on
+        // a readable socket is the equivalent close indication here.
+        const bool channel_eof = socket_readable && rc == 0;
         xSemaphoreGive(terminal->ssh_tx_mutex);
 
         if (wrote_count != 0) {
