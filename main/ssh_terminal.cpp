@@ -4887,13 +4887,14 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         }
     }
     if (found && matches) return true;
+    const std::string host_key_policy = lowercase_ascii(strict_host_key_checking);
     char notice[192];
     std::snprintf(notice, sizeof(notice), "hostkey: %s:%d %s %s\n", host_name.c_str(), port,
                   found ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
     append_text(notice);
     if (found) {
         append_text("ERROR: changed host key rejected. Review it, then use 'hostkey replace'.\n");
-    } else if (lowercase_ascii(strict_host_key_checking) == "yes") {
+    } else if (host_key_policy == "yes") {
         append_text("ERROR: StrictHostKeyChecking=yes rejects unknown host keys.\n");
     } else {
         pending_host_key_host = host_name;
@@ -4901,7 +4902,13 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         pending_host_key_type = key_type_name;
         pending_host_key_material = key_material;
         pending_host_key_fingerprint = key_fingerprint;
-        append_text("Use 'hostkey accept' to save this key, then reconnect; 'hostkey reject' discards it.\n");
+        if (host_key_policy == "no") {
+            append_text("hostkey: StrictHostKeyChecking=no accepts this new key.\n");
+            if (save_pending_host_key()) return true;
+            append_text("ERROR: unable to save host key; connection rejected.\n");
+        } else {
+            append_text("Use 'hostkey accept' to save this key, then reconnect; 'hostkey reject' discards it.\n");
+        }
     }
     return false;
 }
