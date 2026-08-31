@@ -54,6 +54,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <cerrno>
 
@@ -65,11 +66,22 @@ static const char *TAG = "SSH_TERMINAL";
 // idle.
 static bool make_socket_nonblocking(int socket_fd)
 {
+    int enabled = 1;
+    if (ioctl(socket_fd, FIONBIO, &enabled) < 0) {
+        ESP_LOGE(TAG, "failed to make SSH socket nonblocking via ioctl: errno=%d", errno);
+        return false;
+    }
     const int flags = fcntl(socket_fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    if (flags < 0 || fcntl(socket_fd, F_SETFL, O_NONBLOCK) < 0) {
         ESP_LOGE(TAG, "failed to make SSH socket nonblocking: errno=%d", errno);
         return false;
     }
+    const int verified_flags = fcntl(socket_fd, F_GETFL, 0);
+    if (verified_flags < 0 || (verified_flags & O_NONBLOCK) == 0) {
+        ESP_LOGE(TAG, "SSH socket remained blocking after configuration: flags=%d", verified_flags);
+        return false;
+    }
+    ESP_LOGW(TAG, "SSH socket nonblocking enabled");
     return true;
 }
 
@@ -5690,6 +5702,9 @@ void SSHTerminal::ssh_receive_task(void* param)
     // I/O loop, so an idle remote cannot trap this task in channel_read().
     if (terminal->session != nullptr) libssh2_session_set_blocking(terminal->session, 0);
     if (terminal->channel != nullptr) libssh2_channel_set_blocking(terminal->channel, 0);
+    ESP_LOGW(TAG, "ssh rx: libssh2 blocking=%d", terminal->session != nullptr
+             ? libssh2_session_get_blocking(terminal->session) : -1);
+    bool logged_worker_entry = false;
 
     while (terminal->ssh_connected && terminal->channel) {
         // This task is the sole owner of libssh2 after connection setup.  The
@@ -5703,6 +5718,10 @@ void SSHTerminal::ssh_receive_task(void* param)
         if (!terminal->ssh_connected || terminal->channel == nullptr) {
             xSemaphoreGive(terminal->ssh_tx_mutex);
             break;
+        }
+        if (!logged_worker_entry) {
+            ESP_LOGW(TAG, "ssh rx: session worker entered");
+            logged_worker_entry = true;
         }
         bool sent_input = false;
         uint32_t wrote_count = 0;
