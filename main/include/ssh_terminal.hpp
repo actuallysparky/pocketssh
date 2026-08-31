@@ -142,6 +142,11 @@ private:
     std::string pending_host_key_material;
     std::string pending_host_key_fingerprint;
     int pending_host_key_port = 0;
+    bool pending_host_key_changed = false;
+    std::string temporary_host_key_host;
+    std::string temporary_host_key_type;
+    std::string temporary_host_key_material;
+    int temporary_host_key_port = 0;
     int server_alive_interval_seconds = 0;
     int server_alive_count_max = 3;
     int keepalive_failures = 0;

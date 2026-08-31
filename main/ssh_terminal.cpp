@@ -3951,8 +3951,38 @@ void SSHTerminal::handle_key_input(char key)
                     }
                 }
             }
-            else if (current_input == "hostkey accept" || current_input == "hostkey replace") {
-                save_pending_host_key();
+            else if (current_input == "hostkey accept") {
+                if (pending_host_key_changed) {
+                    append_text("hostkey: changed key requires 'hostkey replace'.\n");
+                } else {
+                    save_pending_host_key();
+                }
+            }
+            else if (current_input == "hostkey replace") {
+                if (!pending_host_key_changed) {
+                    append_text("hostkey: no changed key pending replacement.\n");
+                } else {
+                    save_pending_host_key();
+                }
+            }
+            else if (current_input == "hostkey once") {
+                if (pending_host_key_host.empty()) {
+                    append_text("hostkey: no pending key to accept once.\n");
+                } else if (pending_host_key_changed) {
+                    append_text("hostkey: changed key requires 'hostkey replace'.\n");
+                } else {
+                    temporary_host_key_host = pending_host_key_host;
+                    temporary_host_key_port = pending_host_key_port;
+                    temporary_host_key_type = pending_host_key_type;
+                    temporary_host_key_material = pending_host_key_material;
+                    pending_host_key_host.clear();
+                    pending_host_key_type.clear();
+                    pending_host_key_material.clear();
+                    pending_host_key_fingerprint.clear();
+                    pending_host_key_port = 0;
+                    pending_host_key_changed = false;
+                    append_text("hostkey: accepted once; reconnect to continue.\n");
+                }
             }
             else if (current_input == "hostkey reject") {
                 pending_host_key_host.clear();
@@ -3960,6 +3990,11 @@ void SSHTerminal::handle_key_input(char key)
                 pending_host_key_material.clear();
                 pending_host_key_fingerprint.clear();
                 pending_host_key_port = 0;
+                pending_host_key_changed = false;
+                temporary_host_key_host.clear();
+                temporary_host_key_type.clear();
+                temporary_host_key_material.clear();
+                temporary_host_key_port = 0;
                 append_text("hostkey: pending key rejected\n");
             }
             else if (current_input == "hostkey show") {
@@ -4945,6 +4980,7 @@ bool SSHTerminal::save_pending_host_key()
     pending_host_key_material.clear();
     pending_host_key_fingerprint.clear();
     pending_host_key_port = 0;
+    pending_host_key_changed = false;
     return true;
 }
 
@@ -4983,6 +5019,20 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         }
     }
     if (found && matches) return true;
+    if (!found && temporary_host_key_host == host_name && temporary_host_key_port == port) {
+        const bool temporary_matches = temporary_host_key_type == key_type_name &&
+                                       temporary_host_key_material == key_material;
+        temporary_host_key_host.clear();
+        temporary_host_key_type.clear();
+        temporary_host_key_material.clear();
+        temporary_host_key_port = 0;
+        if (temporary_matches) {
+            append_text("hostkey: accepted once for this connection.\n");
+            return true;
+        }
+        append_text("ERROR: host key changed after Accept-once; rejected.\n");
+        return false;
+    }
     const std::string host_key_policy = lowercase_ascii(strict_host_key_checking);
     ESP_LOGW(TAG, "hostkey: %s:%d %s policy=%s", host_name.c_str(), port,
              found ? "changed" : "unknown", host_key_policy.c_str());
@@ -4990,16 +5040,21 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
     std::snprintf(notice, sizeof(notice), "hostkey: %s:%d %s %s\n", host_name.c_str(), port,
                   found ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
     append_text(notice);
-    if (found) {
-        append_text("ERROR: changed host key rejected. Review it, then use 'hostkey replace'.\n");
-    } else if (host_key_policy == "yes") {
-        append_text("ERROR: StrictHostKeyChecking=yes rejects unknown host keys.\n");
-    } else {
+    const auto set_pending = [&]() {
         pending_host_key_host = host_name;
         pending_host_key_port = port;
         pending_host_key_type = key_type_name;
         pending_host_key_material = key_material;
         pending_host_key_fingerprint = key_fingerprint;
+        pending_host_key_changed = found;
+    };
+    if (found) {
+        set_pending();
+        append_text("ERROR: changed host key rejected. Review it, then use 'hostkey replace'.\n");
+    } else if (host_key_policy == "yes") {
+        append_text("ERROR: StrictHostKeyChecking=yes rejects unknown host keys.\n");
+    } else {
+        set_pending();
         if (host_key_policy == "no") {
             // Match the explicitly permissive policy without silently
             // creating durable trust. A later connection validates again.
@@ -5008,10 +5063,11 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
             pending_host_key_material.clear();
             pending_host_key_fingerprint.clear();
             pending_host_key_port = 0;
+            pending_host_key_changed = false;
             append_text("hostkey: StrictHostKeyChecking=no accepts this new key once.\n");
             return true;
         } else {
-            append_text("Use 'hostkey accept' to save this key, then reconnect; 'hostkey reject' discards it.\n");
+            append_text("Use 'hostkey accept' to save, 'hostkey once' to accept once, or 'hostkey reject'.\n");
         }
     }
     return false;
