@@ -5754,6 +5754,11 @@ void SSHTerminal::ssh_receive_task(void* param)
     ESP_LOGW(TAG, "ssh rx: libssh2 blocking=%d", terminal->session != nullptr
              ? libssh2_session_get_blocking(terminal->session) : -1);
     bool logged_worker_entry = false;
+    const int64_t keepalive_interval_ms =
+        static_cast<int64_t>(std::max(0, terminal->server_alive_interval_seconds)) * 1000;
+    int64_t next_keepalive_ms = keepalive_interval_ms > 0
+        ? (esp_timer_get_time() / 1000) + keepalive_interval_ms
+        : 0;
 
     while (terminal->ssh_connected && terminal->channel) {
         if (!terminal->ssh_connected || terminal->channel == nullptr) {
@@ -5805,7 +5810,14 @@ void SSHTerminal::ssh_receive_task(void* param)
             break;
         }
 
-        if (terminal->server_alive_interval_seconds > 0 && terminal->session != nullptr) {
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        if (keepalive_interval_ms > 0 && now_ms >= next_keepalive_ms &&
+            terminal->session != nullptr) {
+            // libssh2_keepalive_send() is nonblocking only when it is called
+            // at the negotiated interval. Calling it on every 10 ms idle
+            // receive pass corrupts the library state on this ESP32 port and
+            // starves CPU0 before any terminal output can be rendered.
+            next_keepalive_ms = now_ms + keepalive_interval_ms;
             int seconds_to_next = 0;
             if (terminal->ssh_tx_mutex == nullptr ||
                 xSemaphoreTake(terminal->ssh_tx_mutex, pdMS_TO_TICKS(25)) != pdTRUE) {
