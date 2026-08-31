@@ -1400,6 +1400,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" : (path_exists_dir("/sd") ? "/sd" : nullptr);
 #endif
     if (root_dir == nullptr) {
+        ESP_LOGE(TAG, "serialrx: no SD root mountpoint after successful mount");
         terminal->append_text("serialrx: no SD root mountpoint\n");
         return false;
     }
@@ -1407,6 +1408,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     const std::string target_path = std::string(root_dir) + "/" + target_name;
     FILE *out = std::fopen(target_path.c_str(), "wb");
     if (out == nullptr) {
+        ESP_LOGE(TAG, "serialrx: failed to open %s: errno=%d", target_path.c_str(), errno);
         terminal->append_text("serialrx: failed to open target file\n");
         return false;
     }
