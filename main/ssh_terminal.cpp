@@ -228,7 +228,7 @@ size_t select_scrollback_capacity(size_t columns, size_t rows)
     // ESP-IDF routes allocations above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL to
     // PSRAM on this target. Reserve room for vectors and other session state,
     // then choose the first capacity that can be safely represented there.
-    const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     // Scrollback rows allocate lazily as output arrives.  Requiring all 512
     // rows to fit as one contiguous allocation would spuriously select 64 on
     // a healthy boot, even with ample PSRAM.  Keep the requested 512-row
