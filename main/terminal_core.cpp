@@ -434,7 +434,26 @@ std::string TerminalCore::plain_text() const
 {
     std::string out;
     for (size_t r = 0; r < rows_; ++r) {
-        for (const auto &cell : screen()[r]) out.push_back(cell.codepoint >= 0x20 && cell.codepoint < 0x7F ? static_cast<char>(cell.codepoint) : '?');
+        for (const auto &cell : row(r)) {
+            const uint32_t codepoint = cell.codepoint;
+            if (codepoint >= 0x20 && codepoint <= 0x7e) {
+                out.push_back(static_cast<char>(codepoint));
+            } else if (codepoint <= 0x7ff) {
+                out.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            } else if (codepoint <= 0xffff && !(codepoint >= 0xd800 && codepoint <= 0xdfff)) {
+                out.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            } else if (codepoint <= 0x10ffff) {
+                out.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+            } else {
+                out += "\xEF\xBF\xBD";
+            }
+        }
         if (r + 1 < rows_) out.push_back('\n');
     }
     return out;
@@ -443,29 +462,54 @@ std::string TerminalCore::plain_text() const
 std::string TerminalCore::encode_key(const KeyEvent &event) const
 {
     if (event.code == KeyCode::Character) {
-        if (event.ctrl && event.codepoint >= '@' && event.codepoint <= '_') return std::string(1, static_cast<char>(event.codepoint & 0x1F));
+        if (event.ctrl && event.codepoint >= '@' && event.codepoint <= '_') {
+            std::string control(1, static_cast<char>(event.codepoint & 0x1F));
+            if (event.alt) control.insert(control.begin(), '\x1B');
+            return control;
+        }
         std::string text;
         if (event.codepoint < 0x80) text.push_back(static_cast<char>(event.codepoint));
+        else if (event.codepoint <= 0x7ff) {
+            text.push_back(static_cast<char>(0xc0 | (event.codepoint >> 6)));
+            text.push_back(static_cast<char>(0x80 | (event.codepoint & 0x3f)));
+        } else if (event.codepoint <= 0xffff && !(event.codepoint >= 0xd800 && event.codepoint <= 0xdfff)) {
+            text.push_back(static_cast<char>(0xe0 | (event.codepoint >> 12)));
+            text.push_back(static_cast<char>(0x80 | ((event.codepoint >> 6) & 0x3f)));
+            text.push_back(static_cast<char>(0x80 | (event.codepoint & 0x3f)));
+        } else if (event.codepoint <= 0x10ffff) {
+            text.push_back(static_cast<char>(0xf0 | (event.codepoint >> 18)));
+            text.push_back(static_cast<char>(0x80 | ((event.codepoint >> 12) & 0x3f)));
+            text.push_back(static_cast<char>(0x80 | ((event.codepoint >> 6) & 0x3f)));
+            text.push_back(static_cast<char>(0x80 | (event.codepoint & 0x3f)));
+        }
         if (event.alt) text.insert(text.begin(), '\x1B');
         return text;
     }
+    const int modifier = 1 + (event.shift ? 1 : 0) + (event.alt ? 2 : 0) + (event.ctrl ? 4 : 0);
+    const bool modified = modifier != 1;
+    const auto csi_modified = [modifier](char final) {
+        return std::string("\x1b[1;") + std::to_string(modifier) + final;
+    };
+    const auto tilde_modified = [modifier](int number) {
+        return std::string("\x1b[") + std::to_string(number) + ";" + std::to_string(modifier) + "~";
+    };
     const char *sequence = "";
+    std::string encoded;
     switch (event.code) {
     case KeyCode::Enter: sequence = "\r"; break; case KeyCode::Backspace: sequence = "\x7F"; break;
     case KeyCode::Tab: sequence = event.shift ? "\x1B[Z" : "\t"; break; case KeyCode::Escape: sequence = "\x1B"; break;
-    case KeyCode::Up: sequence = application_cursor_keys_ ? "\x1BOA" : "\x1B[A"; break; case KeyCode::Down: sequence = application_cursor_keys_ ? "\x1BOB" : "\x1B[B"; break;
-    case KeyCode::Right: sequence = application_cursor_keys_ ? "\x1BOC" : "\x1B[C"; break; case KeyCode::Left: sequence = application_cursor_keys_ ? "\x1BOD" : "\x1B[D"; break;
-    case KeyCode::Home: sequence = "\x1B[H"; break; case KeyCode::End: sequence = "\x1B[F"; break;
-    case KeyCode::PageUp: sequence = "\x1B[5~"; break; case KeyCode::PageDown: sequence = "\x1B[6~"; break;
-    case KeyCode::Insert: sequence = "\x1B[2~"; break; case KeyCode::Delete: sequence = "\x1B[3~"; break;
-    case KeyCode::F1: sequence = "\x1BOP"; break; case KeyCode::F2: sequence = "\x1BOQ"; break; case KeyCode::F3: sequence = "\x1BOR"; break; case KeyCode::F4: sequence = "\x1BOS"; break;
-    case KeyCode::F5: sequence = "\x1B[15~"; break; case KeyCode::F6: sequence = "\x1B[17~"; break; case KeyCode::F7: sequence = "\x1B[18~"; break; case KeyCode::F8: sequence = "\x1B[19~"; break;
-    case KeyCode::F9: sequence = "\x1B[20~"; break; case KeyCode::F10: sequence = "\x1B[21~"; break; case KeyCode::F11: sequence = "\x1B[23~"; break; case KeyCode::F12: sequence = "\x1B[24~"; break;
+    case KeyCode::Up: encoded = modified ? csi_modified('A') : (application_cursor_keys_ ? "\x1BOA" : "\x1B[A"); break; case KeyCode::Down: encoded = modified ? csi_modified('B') : (application_cursor_keys_ ? "\x1BOB" : "\x1B[B"); break;
+    case KeyCode::Right: encoded = modified ? csi_modified('C') : (application_cursor_keys_ ? "\x1BOC" : "\x1B[C"); break; case KeyCode::Left: encoded = modified ? csi_modified('D') : (application_cursor_keys_ ? "\x1BOD" : "\x1B[D"); break;
+    case KeyCode::Home: encoded = modified ? csi_modified('H') : "\x1B[H"; break; case KeyCode::End: encoded = modified ? csi_modified('F') : "\x1B[F"; break;
+    case KeyCode::PageUp: encoded = modified ? tilde_modified(5) : "\x1B[5~"; break; case KeyCode::PageDown: encoded = modified ? tilde_modified(6) : "\x1B[6~"; break;
+    case KeyCode::Insert: encoded = modified ? tilde_modified(2) : "\x1B[2~"; break; case KeyCode::Delete: encoded = modified ? tilde_modified(3) : "\x1B[3~"; break;
+    case KeyCode::F1: encoded = modified ? csi_modified('P') : "\x1BOP"; break; case KeyCode::F2: encoded = modified ? csi_modified('Q') : "\x1BOQ"; break; case KeyCode::F3: encoded = modified ? csi_modified('R') : "\x1BOR"; break; case KeyCode::F4: encoded = modified ? csi_modified('S') : "\x1BOS"; break;
+    case KeyCode::F5: encoded = modified ? tilde_modified(15) : "\x1B[15~"; break; case KeyCode::F6: encoded = modified ? tilde_modified(17) : "\x1B[17~"; break; case KeyCode::F7: encoded = modified ? tilde_modified(18) : "\x1B[18~"; break; case KeyCode::F8: encoded = modified ? tilde_modified(19) : "\x1B[19~"; break;
+    case KeyCode::F9: encoded = modified ? tilde_modified(20) : "\x1B[20~"; break; case KeyCode::F10: encoded = modified ? tilde_modified(21) : "\x1B[21~"; break; case KeyCode::F11: encoded = modified ? tilde_modified(23) : "\x1B[23~"; break; case KeyCode::F12: encoded = modified ? tilde_modified(24) : "\x1B[24~"; break;
     default: break;
     }
-    std::string result(sequence);
-    if (event.alt && event.code != KeyCode::Escape) result.insert(result.begin(), '\x1B');
-    return result;
+    if (!encoded.empty()) return encoded;
+    return sequence;
 }
 
 }  // namespace pocketssh

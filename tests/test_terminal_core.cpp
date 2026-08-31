@@ -61,7 +61,11 @@ void test_scroll_and_key_encoding()
     assert(term.row(1)[0].codepoint == 'c');
     assert(term.encode_key({KeyCode::PageUp}) == "\x1b[5~");
     assert(term.encode_key({KeyCode::Character, 'C', true}) == std::string("\x03", 1));
+    assert(term.encode_key({KeyCode::Character, 'C', true, true}) == std::string("\x1b\x03", 2));
     assert(term.encode_key({KeyCode::Tab, 0, false, false, true}) == "\x1b[Z");
+    assert(term.encode_key({KeyCode::Up, 0, true}) == "\x1b[1;5A");
+    assert(term.encode_key({KeyCode::F5, 0, false, true}) == "\x1b[15;3~");
+    assert(term.encode_key({KeyCode::Character, 0x2603}) == std::string("\xe2\x98\x83"));
 }
 
 void test_truecolor_and_utf8_streaming()
@@ -92,6 +96,19 @@ void test_scrollback_viewport_and_limit()
     assert(term.scrollback_offset() == 0);
 }
 
+void test_utf8_replacement_and_viewport_copy()
+{
+    TerminalCore term(4, 2, 2);
+    const char malformed[] = "\xe2X";
+    feed_bytewise(term, malformed);
+    assert(term.row(0)[0].codepoint == 0xfffd);
+    assert(term.row(0)[1].codepoint == 'X');
+    const char text[] = "a\r\nb\r\nc\r\nd";
+    term.feed(text, std::strlen(text));
+    term.scroll_view(1);
+    assert(term.plain_text().substr(0, 1) == "b");
+}
+
 }  // namespace
 
 int main()
@@ -101,6 +118,7 @@ int main()
     test_scroll_and_key_encoding();
     test_truecolor_and_utf8_streaming();
     test_scrollback_viewport_and_limit();
+    test_utf8_replacement_and_viewport_copy();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }
