@@ -37,9 +37,9 @@
 
 #include "lvgl.h"
 
-// First frame rendered from the supplied T-Deck PocketSSH GIF.  The full GIF
-// decoder starves the ESP32-S3 UI task, so boot uses this safe native image.
-LV_IMG_DECLARE(pocketssh_splash_static);
+// The supplied GIF is predecoded at build time. Frame changes are then just
+// image-pointer swaps, avoiding the GIF decoder watchdog failure on ESP32-S3.
+extern const lv_image_dsc_t pocketssh_splash_frames[16];
 
 #if defined(BSP_LCD_DRAW_BUFF_SIZE)
 #define DRAW_BUF_SIZE BSP_LCD_DRAW_BUFF_SIZE
@@ -57,8 +57,8 @@ static SSHTerminal *ssh_terminal = NULL;
 static lv_obj_t *splash_screen = NULL;
 static lv_obj_t *splash_img = NULL;
 static lv_timer_t *splash_timer = NULL;
-static uint32_t splash_start_tick = 0;
-static constexpr uint32_t SPLASH_AUTO_DISMISS_MS = 2000;
+static uint8_t splash_frame_index = 0;
+static constexpr uint8_t SPLASH_FRAME_COUNT = 16;
 
 static void dismiss_splash_screen_locked()
 {
@@ -102,15 +102,19 @@ void splash_touch_cb(lv_event_t * e)
     dismiss_splash_screen_locked();
 }
 
-// Own the existing timed dismissal behavior so boot remains responsive on a
-// slow network.
+// Keep the supplied animation visible while Wi-Fi initializes behind it.  A
+// hardware key or touch can dismiss it earlier; otherwise it leaves only once
+// the existing boot connection reports success.
 void splash_timer_cb(lv_timer_t * timer)
 {
-    if (lv_tick_elaps(splash_start_tick) >= SPLASH_AUTO_DISMISS_MS) {
+    if (ssh_terminal != nullptr && ssh_terminal->is_wifi_connected()) {
         dismiss_splash_screen_locked();
         return;
     }
-
+    splash_frame_index = static_cast<uint8_t>((splash_frame_index + 1) % SPLASH_FRAME_COUNT);
+    if (splash_img != nullptr) {
+        lv_image_set_src(splash_img, &pocketssh_splash_frames[splash_frame_index]);
+    }
 }
 
 void show_splash_screen()
@@ -130,22 +134,11 @@ void show_splash_screen()
     lv_obj_add_flag(splash_screen, LV_OBJ_FLAG_CLICKABLE);
     
     splash_img = lv_image_create(splash_screen);
-    lv_image_set_src(splash_img, &pocketssh_splash_static);
+    splash_frame_index = 0;
+    lv_image_set_src(splash_img, &pocketssh_splash_frames[splash_frame_index]);
     lv_obj_align(splash_img, LV_ALIGN_CENTER, 0, 0);
-    
-    splash_start_tick = lv_tick_get();
-    
-    splash_timer = lv_timer_create(splash_timer_cb, 100, NULL);
-}
 
-void splash_auto_dismiss_task(void *)
-{
-    vTaskDelay(pdMS_TO_TICKS(SPLASH_AUTO_DISMISS_MS + 500));
-    if (splash_screen) {
-        ESP_LOGW(TAG, "splash fallback dismiss task firing");
-        dismiss_splash_screen();
-    }
-    vTaskDelete(NULL);
+    splash_timer = lv_timer_create(splash_timer_cb, 100, NULL);
 }
 
 void keypad_task(void *param)
@@ -589,7 +582,8 @@ void serial_control_task(void *)
 void boot_wifi_task(void *)
 {
 #if defined(TDECKPLUS_TARGET)
-    vTaskDelay(pdMS_TO_TICKS(SPLASH_AUTO_DISMISS_MS + 1500));
+    // Bring Wi-Fi up behind the splash instead of waiting for it to disappear.
+    vTaskDelay(pdMS_TO_TICKS(250));
     ESP_LOGW(TAG, "wifi auto boot: starting from cached T-Deck Plus config");
 #endif
     if (ssh_terminal) {
@@ -676,7 +670,6 @@ extern "C" void app_main(void)
     
     xTaskCreate(trackball_task, "trackball_task", 4096, NULL, 5, NULL);
 
-    xTaskCreate(splash_auto_dismiss_task, "splash_dismiss", 4096, NULL, 4, NULL);
     xTaskCreate(serial_control_task, "serial_ctl", 12288, NULL, 3, NULL);
     xTaskCreate(boot_wifi_task, "boot_wifi", 8192, NULL, 4, NULL);
 }

@@ -33,7 +33,7 @@ else()
         "c3_keyboard.cpp"
         "ssh_terminal.cpp"
         "terminal_core.cpp"
-        "lvgl_pocketssh_img/pocketssh_splash_static.c"
+        "lvgl_pocketssh_img/pocketssh_splash_frames.c"
     )
 endif()
 
@@ -95,6 +95,11 @@ idf_component_register(
 
 # Add version number as compile definition
 target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETSSH_VERSION="${PROJECT_VER}")
+
+if(NOT TPAGER_TARGET AND NOT TPAGER_DIAG)
+    target_add_binary_data(${COMPONENT_LIB}
+        "lvgl_pocketssh_img/pocketssh_splash_frames.rgb565" BINARY)
+endif()
 
 if(TPAGER_TARGET)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE TPAGER_TARGET=1)
