@@ -159,10 +159,10 @@ const lv_font_t* ui_font_body()
 
 const lv_font_t* ui_font_terminal_big()
 {
-#if defined(LV_FONT_UNSCII_16) && LV_FONT_UNSCII_16
-    return &lv_font_unscii_16;
-#elif defined(LV_FONT_UNSCII_8) && LV_FONT_UNSCII_8
-    return &lv_font_unscii_8;
+#if defined(LV_FONT_MONTSERRAT_14) && LV_FONT_MONTSERRAT_14
+    return &lv_font_montserrat_14;
+#elif defined(LV_FONT_MONTSERRAT_12) && LV_FONT_MONTSERRAT_12
+    return &lv_font_montserrat_12;
 #else
     return ui_font_body();
 #endif
