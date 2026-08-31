@@ -1553,7 +1553,10 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     }
 
     terminal->append_text("serialrx: transfer complete\n");
-    ESP_LOGI(TAG, "serialrx complete: path=%s bytes=%u crc=%08" PRIx32,
+    // Keep the sender's completion evidence visible at the T-Deck's normal
+    // Launcher log level.  The host tool matches this exact marker before
+    // treating the SD copy as verified.
+    ESP_LOGW(TAG, "POCKETCTL serialrx_complete path=%s bytes=%u crc=%08" PRIx32,
              target_path.c_str(), static_cast<unsigned>(received), crc);
     return true;
 }

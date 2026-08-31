@@ -110,6 +110,28 @@ def wait_for_ready(ser: serial.Serial, timeout_s: float) -> bool:
     return False
 
 
+def wait_for_completion(ser: serial.Serial, timeout_s: float, expected_bytes: int, expected_crc32: int) -> bool:
+    """Require device-side size and CRC evidence before accepting an SD copy."""
+    deadline = time.time() + max(0.1, timeout_s)
+    window = ""
+    expected = f"pocketctl serialrx_complete"
+    bytes_marker = f"bytes={expected_bytes}"
+    crc_marker = f"crc={expected_crc32:08x}"
+    while time.time() < deadline:
+        chunk = ser.read(4096)
+        if not chunk:
+            continue
+        text = chunk.decode(errors="ignore")
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        window = (window + text).lower()
+        if len(window) > 4096:
+            window = window[-4096:]
+        if expected in window and bytes_marker in window and crc_marker in window:
+            return True
+    return False
+
+
 def main() -> int:
     args = parse_args()
     if args.target == "tdeckplus" and args.file == str(DEFAULT_PACKAGED_BIN):
@@ -173,15 +195,12 @@ def main() -> int:
 
         ser.write(b"END\n")
         ser.flush()
-        print("Transfer sent. Tailing device output...")
+        print("Transfer sent. Waiting for device CRC confirmation...")
+        if not wait_for_completion(ser, args.tail_seconds, total, crc32):
+            print("Timed out waiting for matching serialrx completion evidence.", file=sys.stderr)
+            return 4
 
-        deadline = time.time() + max(0.0, args.tail_seconds)
-        while time.time() < deadline:
-            chunk_in = ser.read(4096)
-            if not chunk_in:
-                continue
-            sys.stdout.write(chunk_in.decode(errors="ignore"))
-            sys.stdout.flush()
+        print("Device confirmed SD copy size and CRC.")
 
     return 0
 
