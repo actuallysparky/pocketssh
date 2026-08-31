@@ -228,12 +228,15 @@ size_t select_scrollback_capacity(size_t columns, size_t rows)
     // ESP-IDF routes allocations above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL to
     // PSRAM on this target. Reserve room for vectors and other session state,
     // then choose the first capacity that can be safely represented there.
-    const size_t per_row = columns * sizeof(pocketssh::TerminalCell) + 64;
     const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    for (const size_t candidate : {512U, 128U, 64U}) {
-        const size_t required = candidate * rows * per_row + (128 * 1024);
-        if (psram >= required) return candidate;
-    }
+    // Scrollback rows allocate lazily as output arrives.  Requiring all 512
+    // rows to fit as one contiguous allocation would spuriously select 64 on
+    // a healthy boot, even with ample PSRAM.  Keep the requested 512-row
+    // default whenever external RAM is present; only use smaller limits when
+    // there is not even enough contiguous room for a handful of rows.
+    const size_t one_screen = columns * rows * sizeof(pocketssh::TerminalCell);
+    if (psram >= one_screen * 8) return 512;
+    if (psram >= one_screen * 2) return 128;
     return 64;
 }
 
