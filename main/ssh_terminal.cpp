@@ -5654,6 +5654,12 @@ void SSHTerminal::ssh_receive_task(void* param)
 
     ESP_LOGW(TAG, "ssh rx: task started");
 
+    // Some libssh2 builds inherit the session's mode when a channel is
+    // opened. Reassert both modes here, immediately before the long-lived
+    // I/O loop, so an idle remote cannot trap this task in channel_read().
+    if (terminal->session != nullptr) libssh2_session_set_blocking(terminal->session, 0);
+    if (terminal->channel != nullptr) libssh2_channel_set_blocking(terminal->channel, 0);
+
     while (terminal->ssh_connected && terminal->channel) {
         // This task is the sole owner of libssh2 after connection setup.  The
         // keypad only enqueues bytes, so interactive input cannot race a
@@ -5695,9 +5701,22 @@ void SSHTerminal::ssh_receive_task(void* param)
             }
             if (!terminal->ssh_connected) break;
         }
-        rc = terminal->ssh_connected
+        // Do not call channel_read() until the TCP socket is readable. On
+        // this ESP32 libssh2 port a nominally nonblocking channel can still
+        // spin inside channel_read while an idle shell has no output. That
+        // starves the input queue and eventually the task watchdog.
+        bool socket_readable = false;
+        if (terminal->ssh_connected && terminal->ssh_socket >= 0) {
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(terminal->ssh_socket, &readfds);
+            timeval immediate = {0, 0};
+            const int select_rc = select(terminal->ssh_socket + 1, &readfds, nullptr, nullptr, &immediate);
+            socket_readable = select_rc > 0 && FD_ISSET(terminal->ssh_socket, &readfds);
+        }
+        rc = terminal->ssh_connected && socket_readable
             ? libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1)
-            : LIBSSH2_ERROR_SOCKET_DISCONNECT;
+            : (terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT);
         const bool channel_eof = libssh2_channel_eof(terminal->channel) != 0;
         xSemaphoreGive(terminal->ssh_tx_mutex);
 
