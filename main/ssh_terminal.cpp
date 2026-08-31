@@ -3252,6 +3252,8 @@ SSHTerminal::SSHTerminal()
       status_bar(NULL),
       byte_counter_label(NULL),
       side_panel(NULL),
+      side_panel_title(NULL),
+      side_panel_page(0),
       cursor_pos(0),
       bytes_received(0),
       history_index(-1),
@@ -6113,11 +6115,10 @@ void SSHTerminal::create_side_panel()
     lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 100, 0);
     lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
     
-    lv_obj_t* title = lv_label_create(side_panel);
-    lv_label_set_text(title, "Keys");
-    lv_obj_set_style_text_color(title, lv_color_hex(theme_color_hex), 0);
-    lv_obj_set_style_text_font(title, ui_font_body(), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+    side_panel_title = lv_label_create(side_panel);
+    lv_obj_set_style_text_color(side_panel_title, lv_color_hex(theme_color_hex), 0);
+    lv_obj_set_style_text_font(side_panel_title, ui_font_body(), 0);
+    lv_obj_align(side_panel_title, LV_ALIGN_TOP_MID, 0, 5);
     
     auto create_key_button = [this](const char* label, const char* key_seq, int y_offset) {
         lv_obj_t* btn = lv_btn_create(side_panel);
@@ -6135,24 +6136,48 @@ void SSHTerminal::create_side_panel()
         lv_obj_set_user_data(btn, (void*)key_seq);
         lv_obj_add_event_cb(btn, special_key_event_cb, LV_EVENT_CLICKED, this);
         
-        return btn;
+        side_panel_buttons.push_back(btn);
     };
 
-    create_key_button("<-", "LEFT", 35);
-    create_key_button("->", "RIGHT", 70);
-    create_key_button("Line <", "HOME", 105);
-    create_key_button("> Line", "END", 140);
-    create_key_button("Ctrl+C", "\x03", 175);
-    create_key_button("Ctrl+Z", "\x1A", 210);
-    create_key_button("Ctrl+D", "\x04", 245);
-    create_key_button("Ctrl+L", "\x0C", 280);
-    create_key_button("Tab", "\t", 315);
-    create_key_button("Esc", "\x1B", 350);
-    create_key_button("Exit SSH", "EXIT", 385);
-    create_key_button("Clear", "CLEAR", 420);
-    create_key_button("Reconnect", "RECONNECT", 455);
-    create_key_button("Copy", "COPY", 490);
-    create_key_button("Paste", "PASTE", 525);
+    for (int index = 0; index < 15; ++index) {
+        create_key_button("", "", 35 + (index * 35));
+    }
+    populate_side_panel_page();
+}
+
+void SSHTerminal::populate_side_panel_page()
+{
+    struct OverlayKey { const char *label; const char *sequence; };
+    static constexpr OverlayKey kPages[][15] = {
+        {{"<-", "LEFT"}, {"->", "RIGHT"}, {"Line <", "HOME"}, {"> Line", "END"},
+         {"Ctrl+C", "\x03"}, {"Ctrl+Z", "\x1A"}, {"Ctrl+D", "\x04"}, {"Ctrl+L", "\x0C"},
+         {"Tab", "\t"}, {"Esc", "\x1B"}, {"Exit SSH", "EXIT"}, {"Clear", "CLEAR"},
+         {"Reconnect", "RECONNECT"}, {"Copy", "COPY"}, {"More keys", "PAGE"}},
+        {{"F1", "KEY:F1"}, {"F2", "KEY:F2"}, {"F3", "KEY:F3"}, {"F4", "KEY:F4"},
+         {"F5", "KEY:F5"}, {"F6", "KEY:F6"}, {"F7", "KEY:F7"}, {"F8", "KEY:F8"},
+         {"F9", "KEY:F9"}, {"F10", "KEY:F10"}, {"F11", "KEY:F11"}, {"F12", "KEY:F12"},
+         {"Page up", "KEY:PGUP"}, {"Page down", "KEY:PGDN"}, {"More keys", "PAGE"}},
+        {{"Insert", "KEY:INS"}, {"Delete", "KEY:DEL"}, {"Shift+Tab", "KEY:STAB"}, {"Paste", "PASTE"},
+         {"Basic keys", "PAGE"}, {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""},
+         {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""}},
+    };
+    constexpr size_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
+    side_panel_page %= kPageCount;
+    if (side_panel_title != nullptr) {
+        char title[16];
+        std::snprintf(title, sizeof(title), "Keys %u/%u", static_cast<unsigned>(side_panel_page + 1),
+                      static_cast<unsigned>(kPageCount));
+        lv_label_set_text(side_panel_title, title);
+    }
+    for (size_t index = 0; index < side_panel_buttons.size() && index < 15; ++index) {
+        lv_obj_t *button = side_panel_buttons[index];
+        const OverlayKey &key = kPages[side_panel_page][index];
+        lv_obj_t *label = lv_obj_get_child(button, 0);
+        if (label != nullptr) lv_label_set_text(label, key.label);
+        lv_obj_set_user_data(button, const_cast<char *>(key.sequence));
+        if (key.label[0] == '\0') lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void SSHTerminal::toggle_side_panel()
@@ -6207,6 +6232,30 @@ void SSHTerminal::send_special_key(const char* sequence)
     }
     if (strcmp(sequence, "PASTE") == 0) {
         paste_device_clipboard();
+        return;
+    }
+    if (strcmp(sequence, "PAGE") == 0) {
+        side_panel_page = static_cast<uint8_t>((side_panel_page + 1) % 3);
+        populate_side_panel_page();
+        return;
+    }
+
+    if (std::strncmp(sequence, "KEY:", 4) == 0) {
+        const char *name = sequence + 4;
+        pocketssh::KeyEvent event = {};
+        if (std::strcmp(name, "PGUP") == 0) event.code = pocketssh::KeyCode::PageUp;
+        else if (std::strcmp(name, "PGDN") == 0) event.code = pocketssh::KeyCode::PageDown;
+        else if (std::strcmp(name, "INS") == 0) event.code = pocketssh::KeyCode::Insert;
+        else if (std::strcmp(name, "DEL") == 0) event.code = pocketssh::KeyCode::Delete;
+        else if (std::strcmp(name, "STAB") == 0) { event.code = pocketssh::KeyCode::Tab; event.shift = true; }
+        else if (name[0] == 'F' && name[1] >= '1' && name[1] <= '9' && name[2] == '\0') {
+            event.code = static_cast<pocketssh::KeyCode>(static_cast<int>(pocketssh::KeyCode::F1) + (name[1] - '1'));
+        } else if (std::strcmp(name, "F10") == 0) event.code = pocketssh::KeyCode::F10;
+        else if (std::strcmp(name, "F11") == 0) event.code = pocketssh::KeyCode::F11;
+        else if (std::strcmp(name, "F12") == 0) event.code = pocketssh::KeyCode::F12;
+        else return;
+        if (ssh_connected && channel) send_terminal_bytes(terminal_core.encode_key(event));
+        toggle_side_panel();
         return;
     }
     
