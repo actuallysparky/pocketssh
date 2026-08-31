@@ -4299,6 +4299,13 @@ void SSHTerminal::run_control_command(const std::string &line)
     // Enter key through handle_key_input().  Local commands, including the
     // SD receiver, remain available only while disconnected.
     if (ssh_connected) {
+        // A firmware transfer must be handled by the local serial receiver.
+        // Never turn this control command into a remote shell command while a
+        // session is active: it would neither stage the file nor be safe.
+        if (line.rfind("serialrx", 0) == 0) {
+            append_text("serialrx unavailable during active SSH session\n");
+            return;
+        }
         send_terminal_bytes(line);
         send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Enter}));
         return;
