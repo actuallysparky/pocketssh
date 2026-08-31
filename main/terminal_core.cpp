@@ -46,6 +46,7 @@ void TerminalCore::configure_scrollback_storage(TerminalCell *storage, size_t ca
     scrollback_storage_columns_ = storage != nullptr ? storage_columns : 0;
     scrollback_storage_head_ = 0;
     scrollback_storage_size_ = 0;
+    scrollback_offset_ = 0;
     scrollback_limit_ = storage != nullptr ? capacity_rows : scrollback_limit_;
     scrollback_row_view_.assign(columns_, TerminalCell{});
 }
