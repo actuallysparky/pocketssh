@@ -33,6 +33,7 @@
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
 #include "esp_vfs_fat.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "sdmmc_cmd.h"
 #include "utilities.h"
 #endif
@@ -1279,30 +1280,40 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
     }
     line_out->clear();
 
-    const int stdin_fd = fileno(stdin);
-    if (stdin_fd < 0) {
-        return false;
-    }
+    const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
 
-    while (true) {
+    while (esp_timer_get_time() < deadline_us) {
+#if defined(TDECKPLUS_TARGET)
+        uint8_t byte = 0;
+        if (usb_serial_jtag_ll_read_rxfifo(&byte, 1) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        const char ch = static_cast<char>(byte);
+#else
+        const int stdin_fd = fileno(stdin);
+        if (stdin_fd < 0) {
+            return false;
+        }
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(stdin_fd, &readfds);
 
         struct timeval tv = {};
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        tv.tv_sec = 0;
+        tv.tv_usec = 20000;
 
         const int sel = select(stdin_fd + 1, &readfds, nullptr, nullptr, &tv);
         if (sel <= 0) {
-            return false;
+            continue;
         }
 
         char ch = '\0';
         const ssize_t n = read(stdin_fd, &ch, 1);
         if (n <= 0) {
-            return false;
+            continue;
         }
+#endif
         if (ch == '\r') {
             continue;
         }
@@ -1313,6 +1324,7 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
             line_out->push_back(ch);
         }
     }
+    return false;
 }
 
 int hex_nibble(char c)
