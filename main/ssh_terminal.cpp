@@ -223,6 +223,20 @@ constexpr size_t kTerminalIngressMaxBytes = 16384;
 constexpr size_t kTerminalIngressKeepBytes = 12288;
 constexpr int64_t kTerminalFlushIntervalMs = 250;
 
+size_t select_scrollback_capacity(size_t columns, size_t rows)
+{
+    // ESP-IDF routes allocations above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL to
+    // PSRAM on this target. Reserve room for vectors and other session state,
+    // then choose the first capacity that can be safely represented there.
+    const size_t per_row = columns * sizeof(pocketssh::TerminalCell) + 64;
+    const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    for (const size_t candidate : {512U, 128U, 64U}) {
+        const size_t required = candidate * rows * per_row + (128 * 1024);
+        if (psram >= required) return candidate;
+    }
+    return 64;
+}
+
 void log_heap_snapshot(const char *stage)
 {
     const uint32_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
@@ -3245,7 +3259,7 @@ SSHTerminal::SSHTerminal()
       history_needs_save(false),
       history_save_timer(NULL),
       last_display_update(0),
-      terminal_core(67, 13, 512),
+      terminal_core(67, 13, select_scrollback_capacity(67, 13)),
       wifi_connected(false),
       boot_wifi_auto_connect_attempted(false),
       ssh_connected(false),
@@ -3282,6 +3296,9 @@ SSHTerminal::SSHTerminal()
       terminal_selection_end_row(0),
       terminal_selection_end_col(0)
 {
+    ESP_LOGW(TAG, "terminal scrollback: %u rows (%s)",
+             static_cast<unsigned>(terminal_core.scrollback_limit()),
+             terminal_core.scrollback_limit() == 512 ? "PSRAM default" : "PSRAM fallback");
     vTaskDelay(pdMS_TO_TICKS(100));
     load_theme_color_from_nvs();
     

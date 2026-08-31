@@ -54,6 +54,7 @@ public:
     bool bracketed_paste() const { return bracketed_paste_; }
     bool alternate_screen_active() const { return alternate_screen_active_; }
     size_t scrollback_size() const { return scrollback_.size(); }
+    size_t scrollback_limit() const { return scrollback_limit_; }
     size_t scrollback_offset() const { return scrollback_offset_; }
     void scroll_view(int lines);
 
