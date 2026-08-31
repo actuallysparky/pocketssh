@@ -1,5 +1,11 @@
 # PocketSSH Enhancements — Stored Hosts, Network Profiles, and Known Hosts
 
+> **2.0 status:** This document remains authoritative for the existing
+> `ssh_config` and `wifi_config` compatibility contract. The terminal,
+> host-key, input, and Launcher-delivery requirements for the 2.0 rewrite are
+> defined by `pocketssh-2.0-functional-spec.md` and
+> `pocketssh-2.0-implementation-requirements.md`.
+
 ## Overview
 This enhancement set adds:
 1. **Stored SSH connections** using an OpenSSH-style client config file.

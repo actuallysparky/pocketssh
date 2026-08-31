@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Project version
-set(PROJECT_VER "1.2.0")
+set(PROJECT_VER "2.0.0-dev")
 
 # TPAGER_TARGET contract:
 # - Propagate only the libssh2 packet-size override globally so managed
