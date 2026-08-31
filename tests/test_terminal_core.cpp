@@ -90,6 +90,15 @@ void test_scroll_and_key_encoding()
     assert(term.encode_key({KeyCode::Up, 0, true}) == "\x1b[1;5A");
     assert(term.encode_key({KeyCode::F5, 0, false, true}) == "\x1b[15;3~");
     assert(term.encode_key({KeyCode::Character, 0x2603}) == std::string("\xe2\x98\x83"));
+
+    const char *function_keys[] = {
+        "\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS", "\x1b[15~", "\x1b[17~",
+        "\x1b[18~", "\x1b[19~", "\x1b[20~", "\x1b[21~", "\x1b[23~", "\x1b[24~",
+    };
+    for (int index = 0; index < 12; ++index) {
+        const auto key = static_cast<KeyCode>(static_cast<int>(KeyCode::F1) + index);
+        assert(term.encode_key({key}) == function_keys[index]);
+    }
 }
 
 void test_truecolor_and_utf8_streaming()
@@ -98,9 +107,13 @@ void test_truecolor_and_utf8_streaming()
     const char truecolor[] = "\x1b[38;2;255;0;0mR";
     term.feed(truecolor, std::strlen(truecolor));
     assert(term.row(0)[0].foreground == 196);
+    const char background[] = "\x1b[48;5;21mB\x1b[0mC";
+    term.feed(background, std::strlen(background));
+    assert(term.row(0)[1].background == 21);
+    assert(term.row(0)[2].background == pocketssh::kTerminalDefaultColor);
     const char snowman[] = "\xE2\x98\x83";
     feed_bytewise(term, snowman);
-    assert(term.row(0)[1].codepoint == 0x2603);
+    assert(term.row(0)[3].codepoint == 0x2603);
 }
 
 void test_scrollback_viewport_and_limit()
