@@ -4942,9 +4942,15 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         pending_host_key_material = key_material;
         pending_host_key_fingerprint = key_fingerprint;
         if (host_key_policy == "no") {
-            append_text("hostkey: StrictHostKeyChecking=no accepts this new key.\n");
-            if (save_pending_host_key()) return true;
-            append_text("ERROR: unable to save host key; connection rejected.\n");
+            // Match the explicitly permissive policy without silently
+            // creating durable trust. A later connection validates again.
+            pending_host_key_host.clear();
+            pending_host_key_type.clear();
+            pending_host_key_material.clear();
+            pending_host_key_fingerprint.clear();
+            pending_host_key_port = 0;
+            append_text("hostkey: StrictHostKeyChecking=no accepts this new key once.\n");
+            return true;
         } else {
             append_text("Use 'hostkey accept' to save this key, then reconnect; 'hostkey reject' discards it.\n");
         }
