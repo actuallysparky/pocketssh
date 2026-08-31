@@ -5689,7 +5689,20 @@ void SSHTerminal::ssh_receive_task(void* param)
     ESP_LOGW(TAG, "ssh rx: task started");
 
     while (terminal->ssh_connected && terminal->channel) {
+        // libssh2 has one session-wide nonblocking state machine; keyboard
+        // writes from the keypad task must never race this receive call.
+        if (terminal->ssh_tx_mutex == nullptr ||
+            xSemaphoreTake(terminal->ssh_tx_mutex, pdMS_TO_TICKS(25)) != pdTRUE) {
+            vTaskDelay(1);
+            continue;
+        }
+        if (!terminal->ssh_connected || terminal->channel == nullptr) {
+            xSemaphoreGive(terminal->ssh_tx_mutex);
+            break;
+        }
         rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
+        const bool channel_eof = libssh2_channel_eof(terminal->channel) != 0;
+        xSemaphoreGive(terminal->ssh_tx_mutex);
         
         if (rc > 0) {
             buffer[rc] = '\0';
@@ -5703,7 +5716,7 @@ void SSHTerminal::ssh_receive_task(void* param)
             break;
         }
 
-        if (libssh2_channel_eof(terminal->channel)) {
+        if (channel_eof) {
             ESP_LOGI(TAG, "Channel EOF");
             terminal->flush_display_buffer();
             break;
@@ -5711,7 +5724,15 @@ void SSHTerminal::ssh_receive_task(void* param)
 
         if (terminal->server_alive_interval_seconds > 0 && terminal->session != nullptr) {
             int seconds_to_next = 0;
-            const int keepalive_rc = libssh2_keepalive_send(terminal->session, &seconds_to_next);
+            if (terminal->ssh_tx_mutex == nullptr ||
+                xSemaphoreTake(terminal->ssh_tx_mutex, pdMS_TO_TICKS(25)) != pdTRUE) {
+                vTaskDelay(1);
+                continue;
+            }
+            const int keepalive_rc = terminal->ssh_connected && terminal->session != nullptr
+                ? libssh2_keepalive_send(terminal->session, &seconds_to_next)
+                : LIBSSH2_ERROR_SOCKET_DISCONNECT;
+            xSemaphoreGive(terminal->ssh_tx_mutex);
             if (keepalive_rc == 0 || keepalive_rc == LIBSSH2_ERROR_EAGAIN) {
                 terminal->keepalive_failures = 0;
             } else {
