@@ -110,6 +110,23 @@ void test_utf8_replacement_and_viewport_copy()
     assert(term.text_region(0, 0, 0, 0) == "b");
 }
 
+void test_erase_insert_and_resize()
+{
+    TerminalCore term(6, 3, 4);
+    term.feed("abcdef\x1b[1;3H\x1b[2P", 16);
+    assert(term.row(0)[0].codepoint == 'a');
+    assert(term.row(0)[2].codepoint == 'e');
+    term.feed("\x1b[1;2H\x1b[2@XY", 12);
+    assert(term.row(0)[1].codepoint == 'X');
+    assert(term.row(0)[2].codepoint == 'Y');
+    term.feed("\x1b[2J", 4);
+    assert(term.row(0)[0].codepoint == ' ');
+    term.resize(4, 2);
+    assert(term.columns() == 4 && term.rows() == 2);
+    term.feed("ABCD\r\nEFGH\r\nI", 13);
+    assert(term.row(1)[0].codepoint == 'I');
+}
+
 }  // namespace
 
 int main()
@@ -120,6 +137,7 @@ int main()
     test_truecolor_and_utf8_streaming();
     test_scrollback_viewport_and_limit();
     test_utf8_replacement_and_viewport_copy();
+    test_erase_insert_and_resize();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }
