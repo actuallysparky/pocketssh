@@ -2541,7 +2541,9 @@ bool read_file_contents(const std::string &path, std::string *contents)
 #if defined(TDECKPLUS_TARGET)
     if (path == kKnownHostsPath && g_tdeck_known_hosts_cache_ready) {
         *contents = g_tdeck_known_hosts_cache_text;
-        return !contents->empty();
+        // An empty cache is still a successful first-use lookup.  This lets
+        // callers avoid touching the shared SD SPI bus after boot.
+        return true;
     }
     if (path.rfind("/sdcard/", 0) == 0 || path.rfind("/sd/", 0) == 0) {
         ESP_LOGW(TAG, "read_file_contents: skipping live SD read on T-Deck Plus for %s", path.c_str());
@@ -4953,9 +4955,10 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
     bool found = false;
     bool matches = false;
     {
-        ScopedSDMount mount_guard = {};
         std::string existing;
-        if (mount_guard.ok()) read_file_contents(kKnownHostsPath, &existing);
+        // read_file_contents owns the mount on conventional targets and uses
+        // the boot-time cache on T-Deck Plus, where the display shares SPI.
+        (void)read_file_contents(kKnownHostsPath, &existing);
         std::istringstream lines(existing);
         std::string line;
         while (std::getline(lines, line)) {
@@ -4971,6 +4974,8 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
     }
     if (found && matches) return true;
     const std::string host_key_policy = lowercase_ascii(strict_host_key_checking);
+    ESP_LOGW(TAG, "hostkey: %s:%d %s policy=%s", host_name.c_str(), port,
+             found ? "changed" : "unknown", host_key_policy.c_str());
     char notice[192];
     std::snprintf(notice, sizeof(notice), "hostkey: %s:%d %s %s\n", host_name.c_str(), port,
                   found ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
