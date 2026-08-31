@@ -7,7 +7,7 @@ esp_root="$(cd "${repo_root}/../../.." && pwd)"
 build_dir="${POCKETSSH_BUILD_DIR:-${esp_root}/_local/build/pocketssh/tdeckplus}"
 package_dir="${POCKETSSH_PACKAGE_DIR:-${esp_root}/_local/packages/pocketssh}"
 src_bin="${build_dir}/PocketSSH.bin"
-dst_bin="${package_dir}/PocketSSH-TDeckPlus.bin"
+dst_bin="${package_dir}/PocketSSH-2.0.bin"
 
 if [[ ! -f "${src_bin}" ]]; then
   echo "Missing source binary: ${src_bin}" >&2

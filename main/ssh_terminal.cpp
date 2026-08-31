@@ -167,6 +167,15 @@ const lv_font_t* ui_font_terminal_big()
 #endif
 }
 
+const lv_font_t* ui_font_terminal_compact()
+{
+#if defined(LV_FONT_UNSCII_8) && LV_FONT_UNSCII_8
+    return &lv_font_unscii_8;
+#else
+    return ui_font_small();
+#endif
+}
+
 // Scrollback contract: retain at least ~3 full terminal screens on-device even
 // during bursty output, while still bounding LVGL text area memory growth.
 constexpr size_t kTerminalScrollbackBytes = 12288;
@@ -3131,6 +3140,7 @@ SSHTerminal::SSHTerminal()
       history_needs_save(false),
       history_save_timer(NULL),
       last_display_update(0),
+      terminal_core(67, 13, 512),
       wifi_connected(false),
       boot_wifi_auto_connect_attempted(false),
       ssh_connected(false),
@@ -3508,7 +3518,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     #endif
     lv_obj_set_style_bg_color(terminal_output, lv_color_black(), 0);
     lv_obj_set_style_text_color(terminal_output, lv_color_hex(theme_color_hex), 0);
-    lv_obj_set_style_text_font(terminal_output, ui_font_small(), 0);
+    lv_obj_set_style_text_font(terminal_output, ui_font_terminal_compact(), 0);
     lv_obj_set_style_border_color(terminal_output, lv_color_hex(theme_color_hex), 0);
 #if defined(TPAGER_TARGET)
     lv_obj_set_style_border_width(terminal_output, 1, 0);
@@ -3682,6 +3692,29 @@ void SSHTerminal::clear_terminal()
 
 void SSHTerminal::handle_key_input(char key)
 {
+    if (ssh_connected) {
+        // Ctrl+] is the local control-overlay escape. All other input belongs
+        // to the remote terminal immediately, rather than the old local line
+        // buffer. This is the critical distinction that makes curses-style
+        // applications usable.
+        if (static_cast<unsigned char>(key) == 0x1D) {
+            toggle_special_keys_panel();
+            return;
+        }
+
+        pocketssh::KeyEvent event = {};
+        if (key == '\n' || key == '\r') event.code = pocketssh::KeyCode::Enter;
+        else if (key == 8 || key == 127) event.code = pocketssh::KeyCode::Backspace;
+        else if (key == '\t') event.code = pocketssh::KeyCode::Tab;
+        else if (key == '\x1B') event.code = pocketssh::KeyCode::Escape;
+        else {
+            event.code = pocketssh::KeyCode::Character;
+            event.codepoint = static_cast<unsigned char>(key);
+        }
+        send_terminal_bytes(terminal_core.encode_key(event));
+        return;
+    }
+
     if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
             append_text("\n> ");
@@ -4262,6 +4295,10 @@ void SSHTerminal::navigate_history(int direction)
 
 void SSHTerminal::move_cursor_left()
 {
+    if (ssh_connected) {
+        send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Left}));
+        return;
+    }
     if (cursor_pos > 0) {
         cursor_pos--;
         cursor_visible = true;
@@ -4271,6 +4308,10 @@ void SSHTerminal::move_cursor_left()
 
 void SSHTerminal::move_cursor_right()
 {
+    if (ssh_connected) {
+        send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Right}));
+        return;
+    }
     if (cursor_pos < current_input.length()) {
         cursor_pos++;
         cursor_visible = true;
@@ -4280,6 +4321,10 @@ void SSHTerminal::move_cursor_right()
 
 void SSHTerminal::move_cursor_home()
 {
+    if (ssh_connected) {
+        send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Home}));
+        return;
+    }
     cursor_pos = 0;
     cursor_visible = true;
     update_input_display();
@@ -4287,6 +4332,10 @@ void SSHTerminal::move_cursor_home()
 
 void SSHTerminal::move_cursor_end()
 {
+    if (ssh_connected) {
+        send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::End}));
+        return;
+    }
     cursor_pos = current_input.length();
     cursor_visible = true;
     update_input_display();
@@ -4881,7 +4930,15 @@ esp_err_t SSHTerminal::ssh_open_channel()
         return ESP_FAIL;
     }
 
-    while ((rc = libssh2_channel_request_pty(channel, "vt100")) == LIBSSH2_ERROR_EAGAIN) {
+    sync_terminal_geometry(false);
+    const int columns = static_cast<int>(terminal_core.columns());
+    const int rows = static_cast<int>(terminal_core.rows());
+    const int width_px = terminal_output ? lv_obj_get_width(terminal_output) : 0;
+    const int height_px = terminal_output ? lv_obj_get_height(terminal_output) : 0;
+    while ((rc = libssh2_channel_request_pty_ex(channel, "xterm-256color",
+                                                  strlen("xterm-256color"),
+                                                  NULL, 0, columns, rows,
+                                                  width_px, height_px)) == LIBSSH2_ERROR_EAGAIN) {
         waitsocket(ssh_socket, session);
     }
     
@@ -4982,6 +5039,35 @@ void SSHTerminal::send_command(const char* cmd)
     ESP_LOGW(TAG, "ssh command: sent %d bytes", (int)nwritten);
 }
 
+void SSHTerminal::send_terminal_bytes(const std::string &bytes)
+{
+    if (!ssh_connected || channel == nullptr || bytes.empty()) {
+        return;
+    }
+
+    size_t written = 0;
+    int retries = 0;
+    while (written < bytes.size() && retries < 20) {
+        const ssize_t result = libssh2_channel_write(
+            channel, bytes.data() + written, bytes.size() - written);
+        if (result == LIBSSH2_ERROR_EAGAIN) {
+            ++retries;
+            vTaskDelay(1);
+            continue;
+        }
+        if (result <= 0) {
+            ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(result));
+            return;
+        }
+        written += static_cast<size_t>(result);
+        retries = 0;
+    }
+    if (written != bytes.size()) {
+        ESP_LOGW(TAG, "terminal input write incomplete: %d/%d",
+                 static_cast<int>(written), static_cast<int>(bytes.size()));
+    }
+}
+
 void SSHTerminal::ssh_receive_task(void* param)
 {
     SSHTerminal* terminal = (SSHTerminal*)param;
@@ -5065,26 +5151,9 @@ std::string SSHTerminal::strip_ansi_codes(const char* data, size_t len)
 void SSHTerminal::process_received_data(const char* data, size_t len)
 {
     bytes_received += len;
-    
-    std::string cleaned = strip_ansi_codes(data, len);
-    if (!cleaned.empty()) {
-        std::string preview = cleaned.substr(0, 160);
-        for (char &ch : preview) {
-            if (ch == '\n' || ch == '\r' || ch == '\t') {
-                ch = ' ';
-            }
-        }
-        ESP_LOGW(TAG, "ssh rx: %d byte(s): %s",
-                 static_cast<int>(cleaned.size()),
-                 preview.c_str());
-    }
-    text_buffer += cleaned;
+    terminal_core.feed(data, len);
     
     int64_t current_time = esp_timer_get_time() / 1000;
-    
-    if (text_buffer.size() > kTerminalIngressMaxBytes) {
-        text_buffer = text_buffer.substr(text_buffer.size() - kTerminalIngressKeepBytes);
-    }
     
     if (current_time - last_display_update >= kTerminalFlushIntervalMs) {
         flush_display_buffer();
@@ -5095,6 +5164,15 @@ void SSHTerminal::process_received_data(const char* data, size_t len)
 
 void SSHTerminal::flush_display_buffer()
 {
+    if (ssh_connected) {
+        if (display_lock(0)) {
+            update_terminal_display();
+            display_unlock();
+        }
+        last_display_update = esp_timer_get_time() / 1000;
+        return;
+    }
+
     if (text_buffer.empty() && bytes_received == 0) {
         return;
     }
@@ -5267,9 +5345,28 @@ void SSHTerminal::apply_terminal_font_mode()
     if (!terminal_output) {
         return;
     }
-    const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_small();
+    const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
     lv_obj_set_style_text_font(terminal_output, font, 0);
+    sync_terminal_geometry(ssh_connected);
     update_input_display();
+}
+
+void SSHTerminal::sync_terminal_geometry(bool notify_remote)
+{
+    // Compact mode mirrors the existing documented T-Deck layout. Bigger mode
+    // trades columns/rows for readability and must be reported to the server.
+    const int columns = terminal_font_big ? 53 : 67;
+    const int rows = terminal_font_big ? 9 : 13;
+    terminal_core.resize(columns, rows);
+
+    if (notify_remote && channel != nullptr) {
+        const int width_px = terminal_output ? lv_obj_get_width(terminal_output) : 0;
+        const int height_px = terminal_output ? lv_obj_get_height(terminal_output) : 0;
+        const int rc = libssh2_channel_request_pty_size_ex(channel, columns, rows, width_px, height_px);
+        if (rc != 0 && rc != LIBSSH2_ERROR_EAGAIN) {
+            ESP_LOGW(TAG, "PTY resize failed: %d", rc);
+        }
+    }
 }
 
 void SSHTerminal::set_terminal_font_mode(bool big_mode, bool announce)
@@ -5393,6 +5490,13 @@ void SSHTerminal::update_status_bar()
 
 void SSHTerminal::update_terminal_display()
 {
+    if (terminal_output == nullptr || !ssh_connected) {
+        return;
+    }
+
+    const std::string text = terminal_core.plain_text();
+    lv_textarea_set_text(terminal_output, text.c_str());
+    terminal_core.clear_dirty();
 }
 
 void SSHTerminal::create_side_panel()

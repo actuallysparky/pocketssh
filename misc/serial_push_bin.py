@@ -31,7 +31,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 ESP_ROOT = REPO_ROOT.parents[2]
 DEFAULT_BUILD_BIN = ESP_ROOT / "_local" / "build" / "pocketssh" / "tpager" / "PocketSSH.bin"
 DEFAULT_PACKAGED_BIN = ESP_ROOT / "_local" / "packages" / "pocketssh" / "PocketSSH-TPager.bin"
-DEFAULT_TDECKPLUS_BIN = ESP_ROOT / "_local" / "packages" / "pocketssh" / "PocketSSH-TDeckPlus.bin"
+DEFAULT_TDECKPLUS_BIN = ESP_ROOT / "_local" / "packages" / "pocketssh" / "PocketSSH-2.0.bin"
 DEFAULT_REMOTE_NAME = "PocketSSH-TPager.bin"
 
 
@@ -115,7 +115,7 @@ def main() -> int:
     if args.target == "tdeckplus" and args.file == str(DEFAULT_PACKAGED_BIN):
         args.file = str(DEFAULT_TDECKPLUS_BIN)
     if args.target == "tdeckplus" and args.remote_name == DEFAULT_REMOTE_NAME:
-        args.remote_name = "PocketSSH-TDeckPlus.bin"
+        args.remote_name = "PocketSSH-2.0.bin"
 
     path = pathlib.Path(args.file)
     if not path.exists() and path.resolve() == DEFAULT_PACKAGED_BIN.resolve() and DEFAULT_BUILD_BIN.exists():

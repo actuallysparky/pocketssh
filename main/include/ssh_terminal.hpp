@@ -16,6 +16,7 @@
 #include <map>
 #include "libssh2.h"
 #include "battery_measurement.hpp"
+#include "terminal_core.hpp"
 
 #define SSH_MAX_LINE_LENGTH 128
 #define SSH_MAX_LINES 100
@@ -89,6 +90,7 @@ private:
     
     std::string text_buffer;
     int64_t last_display_update;
+    pocketssh::TerminalCore terminal_core;
     
     bool wifi_connected;
     bool boot_wifi_auto_connect_attempted;
@@ -136,6 +138,8 @@ private:
     void update_input_display();
     void process_received_data(const char* data, size_t len);
     void flush_display_buffer();
+    void send_terminal_bytes(const std::string &bytes);
+    void sync_terminal_geometry(bool notify_remote);
     
     void load_history_from_nvs();
     void save_history_to_nvs();
