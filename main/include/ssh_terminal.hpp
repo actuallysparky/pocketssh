@@ -186,6 +186,7 @@ private:
     
     void update_terminal_display();
     void show_ssh_terminal_view();
+    void set_ssh_terminal_layout(bool active);
     void rebuild_terminal_grid();
     void render_terminal_grid_row(size_t row_index);
     void update_input_display();

@@ -3994,25 +3994,6 @@ void SSHTerminal::handle_key_input(char key)
             event.codepoint = static_cast<unsigned char>(key);
         }
         send_terminal_bytes(terminal_core.encode_key(event));
-
-        // SSH input is transmitted immediately, but a short local preview in
-        // the footer gives physical-keyboard users confirmation before the
-        // remote side echoes the completed line.  It is display-only: the
-        // remote channel remains byte-oriented and receives every key now.
-        if (key == '\n' || key == '\r') {
-            current_input.clear();
-            cursor_pos = 0;
-        } else if (key == 8 || key == 127) {
-            if (cursor_pos > 0 && !current_input.empty()) {
-                current_input.erase(cursor_pos - 1, 1);
-                --cursor_pos;
-            }
-        } else if (key >= 32 && key <= 126) {
-            current_input.insert(cursor_pos, 1, key);
-            ++cursor_pos;
-        }
-        cursor_visible = true;
-        update_input_display();
         return;
     }
 
@@ -5328,6 +5309,7 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     // only rows touched by the first server bytes.
     terminal_core.clear_dirty();
     show_ssh_terminal_view();
+    sync_terminal_geometry(true);
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
@@ -5507,6 +5489,7 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     terminal_core.reset();
     terminal_core.clear_dirty();
     show_ssh_terminal_view();
+    sync_terminal_geometry(true);
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
@@ -5661,9 +5644,10 @@ esp_err_t SSHTerminal::disconnect()
     libssh2_exit();
     if (tx_locked) xSemaphoreGive(ssh_tx_mutex);
     
-    if (display_lock(0)) {
+    if (display_lock(200)) {
         if (terminal_grid) lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
         if (terminal_output) lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+        set_ssh_terminal_layout(false);
         update_status_bar();
         append_text("\nDisconnected\n");
         display_unlock();
@@ -6142,7 +6126,9 @@ void SSHTerminal::sync_terminal_geometry(bool notify_remote)
     // Derive the advertised terminal size from the actual display content area
     // and fixed-cell font metrics; never advertise stale hard-coded geometry.
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-    const lv_obj_t *surface = terminal_grid ? terminal_grid : terminal_output;
+    // The T-Deck Plus fallback presents an active SSH session through the
+    // full-height textarea, so advertise that actual visible geometry.
+    const lv_obj_t *surface = ssh_connected || terminal_grid == nullptr ? terminal_output : terminal_grid;
     const int cell_width = std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
     const int content_width = surface ? lv_obj_get_content_width(surface) : cell_width * (terminal_font_big ? 53 : 67);
@@ -6312,6 +6298,7 @@ void SSHTerminal::show_ssh_terminal_view()
         ESP_LOGW(TAG, "SSH terminal view: display lock timeout");
         return;
     }
+    set_ssh_terminal_layout(true);
     if (terminal_output != nullptr) {
         lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
         const std::string initial_text = terminal_core.plain_text();
@@ -6325,6 +6312,29 @@ void SSHTerminal::show_ssh_terminal_view()
              static_cast<unsigned>(terminal_core.rows()),
              static_cast<unsigned>(terminal_core.columns()));
     display_unlock();
+}
+
+void SSHTerminal::set_ssh_terminal_layout(bool active)
+{
+    if (terminal_output == nullptr || terminal_screen == nullptr) {
+        return;
+    }
+    lv_obj_t *input_container = input_label != nullptr ? lv_obj_get_parent(input_label) : nullptr;
+    if (active) {
+        if (input_container != nullptr) {
+            lv_obj_add_flag(input_container, LV_OBJ_FLAG_HIDDEN);
+        }
+        const int height = std::max(1, static_cast<int>(lv_obj_get_content_height(terminal_screen)) - 25);
+        lv_obj_set_size(terminal_output, lv_pct(100), height);
+        lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
+        return;
+    }
+
+    if (input_container != nullptr) {
+        lv_obj_clear_flag(input_container, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_size(terminal_output, lv_pct(100), lv_pct(75));
+    lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
 }
 
 void SSHTerminal::rebuild_terminal_grid()
