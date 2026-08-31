@@ -37,15 +37,9 @@
 
 #include "lvgl.h"
 
-// Pepboy splash screen images
-LV_IMG_DECLARE(pepboy_0);
-LV_IMG_DECLARE(pepboy_1);
-LV_IMG_DECLARE(pepboy_2);
-LV_IMG_DECLARE(pepboy_3);
-LV_IMG_DECLARE(pepboy_4);
-LV_IMG_DECLARE(pepboy_5);
-LV_IMG_DECLARE(pepboy_6);
-LV_IMG_DECLARE(pepboy_7);
+// Raw bytes embedded by CMake from the supplied T-Deck PocketSSH GIF.
+extern const uint8_t pocketssh_splash_gif_start[] asm("_binary_pocketssh_splash_gif_start");
+extern const uint8_t pocketssh_splash_gif_end[] asm("_binary_pocketssh_splash_gif_end");
 
 #if defined(BSP_LCD_DRAW_BUFF_SIZE)
 #define DRAW_BUF_SIZE BSP_LCD_DRAW_BUFF_SIZE
@@ -63,12 +57,17 @@ static SSHTerminal *ssh_terminal = NULL;
 static lv_obj_t *splash_screen = NULL;
 static lv_obj_t *splash_img = NULL;
 static lv_timer_t *splash_timer = NULL;
-static int splash_frame = 0;
 static uint32_t splash_start_tick = 0;
 static constexpr uint32_t SPLASH_AUTO_DISMISS_MS = 2000;
-static const lv_image_dsc_t* pepboy_frames[] = {
-    &pepboy_0, &pepboy_1, &pepboy_2, &pepboy_3,
-    &pepboy_4, &pepboy_5, &pepboy_6, &pepboy_7
+static lv_image_dsc_t pocketssh_splash_gif = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_RAW,
+        .w = 0,
+        .h = 0,
+    },
+    .data_size = 0,
+    .data = pocketssh_splash_gif_start,
 };
 
 static void dismiss_splash_screen_locked()
@@ -113,7 +112,8 @@ void splash_touch_cb(lv_event_t * e)
     dismiss_splash_screen_locked();
 }
 
-// Splash screen animation callback
+// LVGL advances the GIF itself.  This timer only owns the existing timed
+// dismissal behavior so boot remains responsive on a slow network.
 void splash_timer_cb(lv_timer_t * timer)
 {
     if (lv_tick_elaps(splash_start_tick) >= SPLASH_AUTO_DISMISS_MS) {
@@ -121,16 +121,6 @@ void splash_timer_cb(lv_timer_t * timer)
         return;
     }
 
-    // Update to next frame
-    splash_frame++;
-    
-    // Wrap frame index (8 frames total) - loop indefinitely
-    if (splash_frame >= 8) {
-        splash_frame = 0;
-    }
-    
-    // Update image
-    lv_image_set_src(splash_img, pepboy_frames[splash_frame]);
 }
 
 void show_splash_screen()
@@ -149,17 +139,18 @@ void show_splash_screen()
     lv_obj_add_event_cb(splash_screen, splash_touch_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_flag(splash_screen, LV_OBJ_FLAG_CLICKABLE);
     
-    // Create image object centered on screen
-    splash_img = lv_image_create(splash_screen);
-    lv_image_set_src(splash_img, &pepboy_0);
+    // The GIF is native 320x240.  RGB565 limits its decode framebuffer to
+    // 150 KiB while keeping it in the display's native color format.
+    pocketssh_splash_gif.data_size = static_cast<uint32_t>(
+        pocketssh_splash_gif_end - pocketssh_splash_gif_start);
+    splash_img = lv_gif_create(splash_screen);
+    lv_gif_set_color_format(splash_img, LV_COLOR_FORMAT_RGB565);
+    lv_gif_set_src(splash_img, &pocketssh_splash_gif);
     lv_obj_align(splash_img, LV_ALIGN_CENTER, 0, 0);
     
-    // Reset counter
-    splash_frame = 0;
     splash_start_tick = lv_tick_get();
     
-    // Create timer for animation (100ms per frame for smooth walking animation)
-    splash_timer = lv_timer_create(splash_timer_cb, 150, NULL);
+    splash_timer = lv_timer_create(splash_timer_cb, 100, NULL);
 }
 
 void splash_auto_dismiss_task(void *)

@@ -39,14 +39,16 @@ This variant focuses on the LilyGO T-Lora Pager / T-Pager hardware, while preser
   3. `~/.espressif/python_env/idf5.5_py3.14_env/bin/python ./misc/serial_push_bin.py --port /dev/cu.usbmodem201101`
 
 ## Build/Deploy Contract (T-Deck Plus)
-- Packaged artifact name is `PocketSSH-TDeckPlus.bin`.
+- Packaged artifact name is `PocketSSH-2.0.bin`.
+- Stage the same artifact to `/sdcard/PocketSSH-2.0.bin`; leave the existing
+  Launcher ROM, including `PocketSSH-TDeckPlus.bin`, untouched.
 - Recommended host flow:
   1. `idf.py -B /Users/sparky/engineering/_state/esp/_local/build/pocketssh/tdeckplus build`
   2. `./misc/package_tdeckplus_bin.sh`
   3. Inspect Launcher app slots before flashing:
      `python3 ./misc/flash_app_partition.py --port /dev/cu.usbmodemXXXX --list`
   4. Flash only a confirmed Launcher-managed app/OTA slot:
-     `python3 ./misc/flash_app_partition.py --port /dev/cu.usbmodemXXXX --bin /Users/sparky/engineering/_state/esp/_local/packages/pocketssh/PocketSSH-TDeckPlus.bin --partition ota_0`
+     `python3 ./misc/flash_app_partition.py --port /dev/cu.usbmodemXXXX --bin /Users/sparky/engineering/_local/packages/pocketssh/PocketSSH-2.0.bin --partition ota_0`
 - Fallback SD staging flow after PocketSSH is running:
   `python3 ./misc/serial_push_bin.py --target tdeckplus --port /dev/cu.usbmodemXXXX`
 

@@ -5626,13 +5626,22 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
     }
 
     size_t written = 0;
-    int retries = 0;
-    while (written < bytes.size() && retries < 20) {
+    while (written < bytes.size()) {
         const ssize_t result = libssh2_channel_write(
             channel, bytes.data() + written, bytes.size() - written);
         if (result == LIBSSH2_ERROR_EAGAIN) {
-            ++retries;
-            vTaskDelay(1);
+            // libssh2 is nonblocking.  Retrying on the next scheduler tick
+            // can exhaust the old short retry budget before TCP is writable,
+            // silently losing a physical keypress.  Wait for the direction
+            // libssh2 requests while retaining session ownership.
+            if (!ssh_connected || session == nullptr || ssh_socket < 0) {
+                break;
+            }
+            const int ready = waitsocket(ssh_socket, session);
+            if (ready < 0) {
+                ESP_LOGW(TAG, "terminal input socket wait failed: %d", errno);
+                break;
+            }
             continue;
         }
         if (result <= 0) {
@@ -5641,7 +5650,6 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
             return;
         }
         written += static_cast<size_t>(result);
-        retries = 0;
     }
     if (written != bytes.size()) {
         ESP_LOGW(TAG, "terminal input write incomplete: %d/%d",
