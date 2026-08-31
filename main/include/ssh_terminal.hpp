@@ -68,6 +68,11 @@ public:
 private:
     lv_obj_t* terminal_screen;
     lv_obj_t* terminal_output;
+    // The local prompt retains the lightweight textarea.  SSH output uses a
+    // fixed-cell span grid so SGR foreground colors and decorations are
+    // rendered without flattening the terminal core into plain text.
+    lv_obj_t* terminal_grid;
+    std::vector<lv_obj_t*> terminal_grid_rows;
     lv_obj_t* input_label;
     lv_obj_t* status_bar;
     lv_obj_t* byte_counter_label;
@@ -135,6 +140,8 @@ private:
     int32_t terminal_output_touch_scroll_y;
     
     void update_terminal_display();
+    void rebuild_terminal_grid();
+    void render_terminal_grid_row(size_t row_index);
     void update_input_display();
     void process_received_data(const char* data, size_t len);
     void flush_display_buffer();

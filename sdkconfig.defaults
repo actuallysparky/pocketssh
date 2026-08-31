@@ -3,3 +3,6 @@
 # CONFIG_FATFS_LFN_NONE is not set
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=32
+
+# Terminal 2.0 uses fixed-cell glyph metrics in both compact and large modes.
+CONFIG_LV_FONT_UNSCII_16=y
