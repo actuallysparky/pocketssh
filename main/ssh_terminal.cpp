@@ -252,8 +252,8 @@ uint32_t xterm_palette_rgb(uint16_t color, uint32_t fallback)
 {
     if (color == pocketssh::kTerminalDefaultColor) return fallback;
     static constexpr uint32_t base[] = {
-        0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
-        0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+        0x050806, 0xD96868, 0x70E87A, 0xE6C86C, 0x78A8F8, 0xE286E8, 0x5CD6D6, 0xE6E6E6,
+        0x748078, 0xFF8484, 0x92F59A, 0xFFE08A, 0x9CC0FF, 0xF0A5F0, 0x86EEEE, 0xFFFFFF,
     };
     if (color < 16) return base[color];
     if (color >= 232 && color <= 255) {
@@ -283,6 +283,60 @@ std::string terminal_cell_utf8(uint32_t codepoint)
 bool same_terminal_style(const pocketssh::TerminalCell &left, const pocketssh::TerminalCell &right)
 {
     return left.foreground == right.foreground && left.background == right.background && left.style == right.style;
+}
+
+constexpr uint32_t kTerminalBackground = 0x050806;
+constexpr uint32_t kTerminalPhosphorGreen = 0x70E87A;
+
+int terminal_cell_width(const lv_font_t *font, bool big)
+{
+    // UNSCII has a nine-pixel line height already.  A one-pixel negative
+    // letter spacing makes its mostly 6-7px glyph shapes a dense, crisp 7px
+    // terminal pitch without fractional scaling or antialiasing.
+    return big ? std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M'))) : 7;
+}
+
+uint32_t terminal_cell_foreground(const pocketssh::TerminalCell &cell, uint32_t theme)
+{
+    uint32_t foreground = xterm_palette_rgb(cell.foreground, theme);
+    uint32_t background = xterm_palette_rgb(cell.background, kTerminalBackground);
+    if (cell.style & pocketssh::CellStyleBold) {
+        if (cell.foreground < 8) foreground = xterm_palette_rgb(cell.foreground + 8, theme);
+    }
+    if (cell.style & pocketssh::CellStyleInverse) std::swap(foreground, background);
+    if (cell.style & pocketssh::CellStyleConceal) foreground = background;
+    return foreground;
+}
+
+std::string terminal_recolor_text(const pocketssh::TerminalCore &core, uint32_t theme)
+{
+    std::string output;
+    output.reserve(core.rows() * (core.columns() + 12));
+    for (size_t row = 0; row < core.rows(); ++row) {
+        const auto &cells = core.row(row);
+        size_t start = 0;
+        while (start < cells.size()) {
+            const uint32_t color = terminal_cell_foreground(cells[start], theme);
+            size_t end = start + 1;
+            while (end < cells.size() && terminal_cell_foreground(cells[end], theme) == color) ++end;
+            char prefix[10] = {};
+            std::snprintf(prefix, sizeof(prefix), "#%06x ", static_cast<unsigned>(color));
+            output += prefix;
+            for (size_t index = start; index < end; ++index) {
+                const std::string glyph = terminal_cell_utf8(cells[index].codepoint);
+                // LVGL's recolor syntax uses '#'; doubling preserves literal
+                // shell prompts and file names containing that character.
+                for (char ch : glyph) {
+                    if (ch == '#') output += "##";
+                    else output += ch;
+                }
+            }
+            output += '#';
+            start = end;
+        }
+        if (row + 1 < core.rows()) output += '\n';
+    }
+    return output;
 }
 
 // Scrollback contract: retain at least ~3 full terminal screens on-device even
@@ -919,7 +973,7 @@ constexpr NamedThemeColor kNamedThemeColors[] = {
     {"red", 0xFF4040},
     {"orange", 0xFF9900},
     {"yellow", 0xFFFF00},
-    {"green", 0x00FF00},
+    {"green", kTerminalPhosphorGreen},
     {"blue", 0x4AA3FF},
     {"purple", 0xB66CFF},
     {"white", 0xF7FFF9},
@@ -3343,7 +3397,7 @@ SSHTerminal::SSHTerminal()
       connected_ssh_host(""),
       terminal_font_big(false),
       theme_color_name("green"),
-      theme_color_hex(0x00FF00),
+      theme_color_hex(kTerminalPhosphorGreen),
       theme_color_from_nvs(false),
       touch_scrub_active(false),
       touch_scrub_moved(false),
@@ -3731,7 +3785,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
 #endif
 
     terminal_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(terminal_screen, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(terminal_screen, lv_color_hex(kTerminalBackground), 0);
     lv_obj_set_style_bg_opa(terminal_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(terminal_screen, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -3763,9 +3817,10 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_size(terminal_output, lv_pct(100), lv_pct(75));
     lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
     #endif
-    lv_obj_set_style_bg_color(terminal_output, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(terminal_output, lv_color_hex(kTerminalBackground), 0);
     lv_obj_set_style_text_color(terminal_output, lv_color_hex(theme_color_hex), 0);
     lv_obj_set_style_text_font(terminal_output, ui_font_terminal_compact(), 0);
+    lv_obj_set_style_text_letter_space(terminal_output, -1, 0);
     lv_obj_set_style_border_color(terminal_output, lv_color_hex(theme_color_hex), 0);
 #if defined(TPAGER_TARGET)
     lv_obj_set_style_border_width(terminal_output, 1, 0);
@@ -3774,6 +3829,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
 #endif
     lv_textarea_set_cursor_click_pos(terminal_output, false);
     lv_textarea_set_one_line(terminal_output, false);
+    lv_label_set_recolor(lv_textarea_get_label(terminal_output), true);
     lv_obj_set_scrollbar_mode(terminal_output, LV_SCROLLBAR_MODE_OFF);
     
     lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_CLICK_FOCUSABLE);
@@ -3799,7 +3855,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_size(terminal_grid, lv_pct(100), lv_pct(75));
     lv_obj_align(terminal_grid, LV_ALIGN_TOP_MID, 0, 25);
 #endif
-    lv_obj_set_style_bg_color(terminal_grid, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(terminal_grid, lv_color_hex(kTerminalBackground), 0);
     lv_obj_set_style_bg_opa(terminal_grid, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(terminal_grid, lv_color_hex(theme_color_hex), 0);
 #if defined(TPAGER_TARGET)
@@ -6107,6 +6163,7 @@ void SSHTerminal::apply_terminal_font_mode()
     }
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
     lv_obj_set_style_text_font(terminal_output, font, 0);
+    lv_obj_set_style_text_letter_space(terminal_output, terminal_font_big ? 0 : -1, 0);
     if (terminal_grid) lv_obj_set_style_text_font(terminal_grid, font, 0);
     sync_terminal_geometry(ssh_connected);
     update_input_display();
@@ -6129,7 +6186,7 @@ void SSHTerminal::sync_terminal_geometry(bool notify_remote)
     // The T-Deck Plus fallback presents an active SSH session through the
     // full-height textarea, so advertise that actual visible geometry.
     const lv_obj_t *surface = ssh_connected || terminal_grid == nullptr ? terminal_output : terminal_grid;
-    const int cell_width = std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
+    const int cell_width = terminal_cell_width(font, terminal_font_big);
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
     const int content_width = surface ? lv_obj_get_content_width(surface) : cell_width * (terminal_font_big ? 53 : 67);
     const int content_height = surface ? lv_obj_get_content_height(surface) : cell_height * (terminal_font_big ? 9 : 13);
@@ -6285,7 +6342,7 @@ void SSHTerminal::update_terminal_display()
         lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
-    const std::string text = terminal_core.plain_text();
+    const std::string text = terminal_recolor_text(terminal_core, theme_color_hex);
     lv_textarea_set_text(terminal_output, text.c_str());
     terminal_core.clear_dirty();
 }
@@ -6327,6 +6384,8 @@ void SSHTerminal::set_ssh_terminal_layout(bool active)
         const int height = std::max(1, static_cast<int>(lv_obj_get_content_height(terminal_screen)) - 25);
         lv_obj_set_size(terminal_output, lv_pct(100), height);
         lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
+        lv_obj_set_style_border_width(terminal_output, 0, 0);
+        lv_obj_set_style_pad_all(terminal_output, 0, 0);
         return;
     }
 
@@ -6335,6 +6394,8 @@ void SSHTerminal::set_ssh_terminal_layout(bool active)
     }
     lv_obj_set_size(terminal_output, lv_pct(100), lv_pct(75));
     lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
+    lv_obj_set_style_border_width(terminal_output, 2, 0);
+    lv_obj_set_style_pad_all(terminal_output, 1, 0);
 }
 
 void SSHTerminal::rebuild_terminal_grid()
