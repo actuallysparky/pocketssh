@@ -5907,6 +5907,15 @@ void SSHTerminal::apply_terminal_font_mode()
 
 void SSHTerminal::sync_terminal_geometry(bool notify_remote)
 {
+    // This is called by both LVGL-owned UI changes and the SSH setup task.
+    // Querying object geometry or rebuilding rows concurrently with LVGL's
+    // refresh task corrupts style traversal, particularly once PSRAM makes
+    // the larger scrollback allocation available.
+    const bool locked_here = display_lock(200);
+    if (!locked_here) {
+        ESP_LOGW(TAG, "terminal geometry sync skipped: display lock timeout");
+        return;
+    }
     // Derive the advertised terminal size from the actual display content area
     // and fixed-cell font metrics; never advertise stale hard-coded geometry.
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
@@ -5920,9 +5929,11 @@ void SSHTerminal::sync_terminal_geometry(bool notify_remote)
     terminal_core.resize(columns, rows);
     rebuild_terminal_grid();
 
+    const int width_px = surface ? lv_obj_get_content_width(surface) : 0;
+    const int height_px = surface ? lv_obj_get_content_height(surface) : 0;
+    display_unlock();
+
     if (notify_remote && channel != nullptr) {
-        const int width_px = surface ? lv_obj_get_content_width(surface) : 0;
-        const int height_px = surface ? lv_obj_get_content_height(surface) : 0;
         const int rc = libssh2_channel_request_pty_size_ex(channel, columns, rows, width_px, height_px);
         if (rc != 0 && rc != LIBSSH2_ERROR_EAGAIN) {
             ESP_LOGW(TAG, "PTY resize failed: %d", rc);
