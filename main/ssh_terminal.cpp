@@ -5672,23 +5672,40 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
         return;
     }
 
-    if (ssh_input_queue == nullptr) {
-        ESP_LOGE(TAG, "terminal input unavailable: queue allocation failed");
-        return;
-    }
-    uint32_t queued_count = 0;
-    for (const unsigned char byte : bytes) {
-        const uint8_t queued = byte;
-        if (xQueueSend(ssh_input_queue, &queued, pdMS_TO_TICKS(100)) != pdTRUE) {
-            ESP_LOGW(TAG, "terminal input queue full; input byte dropped");
+    // The ESP-IDF libssh2 receive path can remain inside an initial channel
+    // read despite nonblocking transport callbacks.  Do not put physical
+    // input behind that worker: it makes a responsive keyboard indistinguish-
+    // able from a dead terminal.  libssh2's established T-Deck path sends
+    // terminal bytes directly and retries only EAGAIN, allowing incoming
+    // activity to unblock the receive side naturally.
+    size_t written = 0;
+    int retries = 0;
+    constexpr int kMaxWriteRetries = 20;
+    while (written < bytes.size() && retries < kMaxWriteRetries &&
+           ssh_connected && channel != nullptr) {
+        const ssize_t result = libssh2_channel_write(
+            channel, bytes.data() + written, bytes.size() - written);
+        if (result == LIBSSH2_ERROR_EAGAIN) {
+            ++retries;
+            vTaskDelay(1);
+            continue;
+        }
+        if (result <= 0) {
+            ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(result));
             return;
         }
-        ++queued_count;
+        written += static_cast<size_t>(result);
+        retries = 0;
     }
-    const uint32_t total_enqueued = ssh_input_enqueued.fetch_add(queued_count) + queued_count;
-    ESP_LOGW(TAG, "ssh tx queued=%u total=%u pending=%u", static_cast<unsigned>(queued_count),
-             static_cast<unsigned>(total_enqueued),
-             static_cast<unsigned>(uxQueueMessagesWaiting(ssh_input_queue)));
+    if (written != bytes.size()) {
+        ESP_LOGW(TAG, "terminal input write incomplete: %u/%u",
+                 static_cast<unsigned>(written), static_cast<unsigned>(bytes.size()));
+        return;
+    }
+    const uint32_t total_written = ssh_input_written.fetch_add(static_cast<uint32_t>(written)) +
+                                   static_cast<uint32_t>(written);
+    ESP_LOGW(TAG, "ssh tx wrote=%u total=%u", static_cast<unsigned>(written),
+             static_cast<unsigned>(total_written));
 }
 
 void SSHTerminal::copy_visible_terminal()
@@ -5739,49 +5756,12 @@ void SSHTerminal::ssh_receive_task(void* param)
     bool logged_worker_entry = false;
 
     while (terminal->ssh_connected && terminal->channel) {
-        // This task is the sole owner of libssh2 after connection setup.  The
-        // keypad only enqueues bytes, so interactive input cannot race a
-        // receive, keepalive, or session state transition.
-        if (terminal->ssh_tx_mutex == nullptr ||
-            xSemaphoreTake(terminal->ssh_tx_mutex, pdMS_TO_TICKS(25)) != pdTRUE) {
-            vTaskDelay(1);
-            continue;
-        }
         if (!terminal->ssh_connected || terminal->channel == nullptr) {
-            xSemaphoreGive(terminal->ssh_tx_mutex);
             break;
         }
         if (!logged_worker_entry) {
             ESP_LOGW(TAG, "ssh rx: session worker entered");
             logged_worker_entry = true;
-        }
-        bool sent_input = false;
-        uint32_t wrote_count = 0;
-        uint8_t outbound = 0;
-        // A missing queue means the terminal cannot accept input safely.  Do
-        // not pass a null queue handle to FreeRTOS; leave the session alive
-        // and report the condition in the usual receive path instead.
-        while (terminal->ssh_input_queue != nullptr &&
-               xQueueReceive(terminal->ssh_input_queue, &outbound, 0) == pdTRUE) {
-            while (true) {
-                const char byte = static_cast<char>(outbound);
-                const ssize_t write_rc = libssh2_channel_write(terminal->channel, &byte, 1);
-                if (write_rc == 1) {
-                    sent_input = true;
-                    ++wrote_count;
-                    break;
-                }
-                if (write_rc == LIBSSH2_ERROR_EAGAIN && terminal->session != nullptr &&
-                    terminal->ssh_socket >= 0 && terminal->ssh_connected) {
-                    if (terminal->waitsocket(terminal->ssh_socket, terminal->session) >= 0) {
-                        continue;
-                    }
-                }
-                ESP_LOGW(TAG, "terminal input write failed: %d", static_cast<int>(write_rc));
-                terminal->ssh_connected = false;
-                break;
-            }
-            if (!terminal->ssh_connected) break;
         }
         // Do not call channel_read() until the TCP socket is readable. On
         // this ESP32 libssh2 port a nominally nonblocking channel can still
@@ -5805,14 +5785,6 @@ void SSHTerminal::ssh_receive_task(void* param)
         // task before it can service the input queue.  A zero-byte read on
         // a readable socket is the equivalent close indication here.
         const bool channel_eof = socket_readable && rc == 0;
-        xSemaphoreGive(terminal->ssh_tx_mutex);
-
-        if (wrote_count != 0) {
-            const uint32_t total_written = terminal->ssh_input_written.fetch_add(wrote_count) + wrote_count;
-            ESP_LOGW(TAG, "ssh tx wrote=%u total=%u", static_cast<unsigned>(wrote_count),
-                     static_cast<unsigned>(total_written));
-        }
-        
         if (rc > 0) {
             buffer[rc] = '\0';
             terminal->process_received_data(buffer, rc);
@@ -5821,7 +5793,7 @@ void SSHTerminal::ssh_receive_task(void* param)
             terminal->flush_display_buffer();
             // Poll lightly while idle so physical keystrokes are serviced
             // promptly even when the remote has no output pending.
-            vTaskDelay(sent_input ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(10));
         } else if (rc < 0) {
             ESP_LOGE(TAG, "Read error: %d", (int)rc);
             break;
