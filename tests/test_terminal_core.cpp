@@ -43,6 +43,8 @@ void test_alternate_screen_and_modes()
     term.feed(leave_alt, std::strlen(leave_alt));
     assert(!term.alternate_screen_active());
     assert(term.row(0)[0].codepoint == 'n');
+    term.feed("\x1b[2;3H\x1b[?1049h\x1b[?1049lZ", 23);
+    assert(term.row(1)[2].codepoint == 'Z');
 
     const char app_cursor[] = "\x1b[?1h";
     term.feed(app_cursor, std::strlen(app_cursor));
@@ -51,6 +53,14 @@ void test_alternate_screen_and_modes()
     const char bracketed[] = "\x1b[?2004h";
     term.feed(bracketed, std::strlen(bracketed));
     assert(term.bracketed_paste());
+}
+
+void test_form_feed_clears_and_homes()
+{
+    TerminalCore term(4, 2, 2);
+    term.feed("abcd\fZ", 6);
+    assert(term.row(0)[0].codepoint == 'Z');
+    assert(term.row(0)[1].codepoint == ' ');
 }
 
 void test_scroll_and_key_encoding()
@@ -138,6 +148,7 @@ int main()
     test_scrollback_viewport_and_limit();
     test_utf8_replacement_and_viewport_copy();
     test_erase_insert_and_resize();
+    test_form_feed_clears_and_homes();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }

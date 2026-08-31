@@ -85,6 +85,7 @@ void TerminalCore::reset()
     autowrap_ = true;
     cursor_visible_ = true;
     cursor_row_ = cursor_col_ = saved_row_ = saved_col_ = 0;
+    alternate_saved_row_ = alternate_saved_col_ = 0;
     scroll_top_ = 0;
     scroll_bottom_ = rows_ - 1;
     parser_state_ = ParserState::Ground;
@@ -343,9 +344,16 @@ void TerminalCore::execute_csi(char final)
             if (private_mode && (value == 1047 || value == 1049)) {
                 alternate_screen_active_ = enable;
                 if (enable) {
+                    if (value == 1049) {
+                        alternate_saved_row_ = cursor_row_;
+                        alternate_saved_col_ = cursor_col_;
+                    }
                     alternate_.assign(rows_, blank_row());
                     cursor_row_ = 0;
                     cursor_col_ = 0;
+                } else if (value == 1049) {
+                    cursor_row_ = std::min(alternate_saved_row_, rows_ - 1);
+                    cursor_col_ = std::min(alternate_saved_col_, columns_ - 1);
                 }
                 mark_all_dirty();
             }
@@ -395,6 +403,7 @@ void TerminalCore::feed(const char *bytes, size_t length)
         if (byte == 0x1B) { parser_state_ = ParserState::Escape; continue; }
         if (byte == '\r') { cursor_col_ = 0; continue; }
         if (byte == '\n') { line_feed(); continue; }
+        if (byte == '\f') { erase_in_display(2); cursor_row_ = cursor_col_ = 0; continue; }
         if (byte == '\b') { if (cursor_col_ > 0) --cursor_col_; continue; }
         if (byte == '\t') { cursor_col_ = std::min(columns_ - 1, ((cursor_col_ / 8) + 1) * 8); continue; }
         if (byte < 0x20 || byte == 0x7F) continue;

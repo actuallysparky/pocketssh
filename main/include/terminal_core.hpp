@@ -86,6 +86,8 @@ private:
     size_t cursor_col_ = 0;
     size_t saved_row_ = 0;
     size_t saved_col_ = 0;
+    size_t alternate_saved_row_ = 0;
+    size_t alternate_saved_col_ = 0;
     size_t scroll_top_ = 0;
     size_t scroll_bottom_ = 0;
     TerminalCell attributes_;
