@@ -133,6 +133,21 @@ void test_scrollback_viewport_and_limit()
     assert(term.scrollback_offset() == 0);
 }
 
+void test_external_scrollback_storage_ring()
+{
+    TerminalCore term(4, 2, 2);
+    pocketssh::TerminalCell storage[3 * 8] = {};
+    term.configure_scrollback_storage(storage, 3, 8);
+    const char text[] = "a\r\nb\r\nc\r\nd\r\ne\r\nf";
+    term.feed(text, std::strlen(text));
+    assert(term.scrollback_size() == 3);
+    term.scroll_view(99);
+    // The ring has discarded the earliest line, while the retained history
+    // remains in chronological order through the borrowed storage.
+    assert(term.row(0)[0].codepoint == 'b');
+    assert(term.row(1)[0].codepoint == 'c');
+}
+
 void test_utf8_replacement_and_viewport_copy()
 {
     TerminalCore term(4, 2, 2);
@@ -173,6 +188,7 @@ int main()
     test_scroll_and_key_encoding();
     test_truecolor_and_utf8_streaming();
     test_scrollback_viewport_and_limit();
+    test_external_scrollback_storage_ring();
     test_utf8_replacement_and_viewport_copy();
     test_erase_insert_and_resize();
     test_form_feed_clears_and_homes();

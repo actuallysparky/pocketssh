@@ -236,23 +236,6 @@ constexpr size_t kTerminalIngressMaxBytes = 16384;
 constexpr size_t kTerminalIngressKeepBytes = 12288;
 constexpr int64_t kTerminalFlushIntervalMs = 250;
 
-size_t select_scrollback_capacity(size_t columns, size_t rows)
-{
-    // ESP-IDF routes allocations above CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL to
-    // PSRAM on this target. Reserve room for vectors and other session state,
-    // then choose the first capacity that can be safely represented there.
-    const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    // Scrollback rows allocate lazily as output arrives.  Requiring all 512
-    // rows to fit as one contiguous allocation would spuriously select 64 on
-    // a healthy boot, even with ample PSRAM.  Keep the requested 512-row
-    // default whenever external RAM is present; only use smaller limits when
-    // there is not even enough contiguous room for a handful of rows.
-    const size_t one_screen = columns * rows * sizeof(pocketssh::TerminalCell);
-    if (psram >= one_screen * 8) return 512;
-    if (psram >= one_screen * 2) return 128;
-    return 64;
-}
-
 void log_heap_snapshot(const char *stage)
 {
     const uint32_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
@@ -3283,7 +3266,8 @@ SSHTerminal::SSHTerminal()
       history_needs_save(false),
       history_save_timer(NULL),
       last_display_update(0),
-      terminal_core(67, 13, select_scrollback_capacity(67, 13)),
+      terminal_core(67, 13, 64),
+      terminal_scrollback_storage(nullptr),
       wifi_connected(false),
       boot_wifi_auto_connect_attempted(false),
       ssh_connected(false),
@@ -3320,6 +3304,23 @@ SSHTerminal::SSHTerminal()
       terminal_selection_end_row(0),
       terminal_selection_end_col(0)
 {
+#if defined(TDECKPLUS_TARGET)
+    // Generic malloc keeps sub-4 KiB allocations internal on this ESP-IDF
+    // configuration.  A complete 512-row history is made of many such rows,
+    // so reserve one explicit PSRAM slab instead of exhausting internal RAM
+    // gradually during an active SSH session.
+    constexpr size_t kScrollbackStorageColumns = 80;
+    for (const size_t capacity : {size_t{512}, size_t{128}, size_t{64}}) {
+        const size_t bytes = capacity * kScrollbackStorageColumns * sizeof(pocketssh::TerminalCell);
+        auto *storage = static_cast<pocketssh::TerminalCell *>(
+            heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (storage != nullptr) {
+            terminal_scrollback_storage = storage;
+            terminal_core.configure_scrollback_storage(storage, capacity, kScrollbackStorageColumns);
+            break;
+        }
+    }
+#endif
     ESP_LOGW(TAG, "terminal scrollback: %u rows (%s)",
              static_cast<unsigned>(terminal_core.scrollback_limit()),
              terminal_core.scrollback_limit() == 512 ? "PSRAM default" : "PSRAM fallback");
@@ -3365,6 +3366,10 @@ SSHTerminal::~SSHTerminal()
     if (ssh_tx_mutex) {
         vSemaphoreDelete(ssh_tx_mutex);
         ssh_tx_mutex = NULL;
+    }
+    if (terminal_scrollback_storage != nullptr) {
+        heap_caps_free(terminal_scrollback_storage);
+        terminal_scrollback_storage = nullptr;
     }
 }
 

@@ -53,7 +53,7 @@ public:
     bool application_cursor_keys() const { return application_cursor_keys_; }
     bool bracketed_paste() const { return bracketed_paste_; }
     bool alternate_screen_active() const { return alternate_screen_active_; }
-    size_t scrollback_size() const { return scrollback_.size(); }
+    size_t scrollback_size() const;
     size_t scrollback_limit() const { return scrollback_limit_; }
     size_t scrollback_offset() const { return scrollback_offset_; }
     void scroll_view(int lines);
@@ -65,6 +65,12 @@ public:
     std::string text_region(size_t start_row, size_t start_col, size_t end_row, size_t end_col) const;
     std::string encode_key(const KeyEvent &event) const;
 
+    // Optional caller-owned, contiguous backing store for complete scrollback
+    // rows.  The core otherwise remains a dependency-free host component.
+    // Embedded callers use this to place the large history allocation in
+    // PSRAM instead of relying on many small general-heap allocations.
+    void configure_scrollback_storage(TerminalCell *storage, size_t capacity_rows, size_t storage_columns);
+
 private:
     enum class ParserState : uint8_t { Ground, Escape, Csi, CsiDiscard, Osc, OscEscape, Utf8 };
 
@@ -74,6 +80,12 @@ private:
     std::vector<std::vector<TerminalCell>> normal_;
     std::vector<std::vector<TerminalCell>> alternate_;
     std::vector<std::vector<TerminalCell>> scrollback_;
+    TerminalCell *scrollback_storage_ = nullptr;
+    size_t scrollback_storage_rows_ = 0;
+    size_t scrollback_storage_columns_ = 0;
+    size_t scrollback_storage_head_ = 0;
+    size_t scrollback_storage_size_ = 0;
+    mutable std::vector<TerminalCell> scrollback_row_view_;
     size_t scrollback_offset_ = 0;
     std::vector<bool> dirty_rows_;
     bool alternate_screen_active_ = false;
@@ -119,6 +131,8 @@ private:
     static uint16_t ansi_color(int value, bool background);
     static uint16_t rgb_to_xterm(uint8_t red, uint8_t green, uint8_t blue);
     void reset_attributes();
+    void clear_scrollback();
+    const std::vector<TerminalCell> &scrollback_row(size_t index) const;
 };
 
 }  // namespace pocketssh

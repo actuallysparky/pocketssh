@@ -110,6 +110,9 @@ private:
     std::string text_buffer;
     int64_t last_display_update;
     pocketssh::TerminalCore terminal_core;
+    // T-Deck Plus owns this PSRAM slab; TerminalCore only borrows it so the
+    // same parser remains dependency-free in host tests.
+    pocketssh::TerminalCell *terminal_scrollback_storage;
     
     bool wifi_connected;
     bool boot_wifi_auto_connect_attempted;
