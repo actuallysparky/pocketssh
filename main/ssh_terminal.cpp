@@ -1391,7 +1391,14 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         return false;
     }
 
+#if defined(TDECKPLUS_TARGET)
+    // tdeck_sd_mount() owns this fixed VFS mount.  Do not re-probe it through
+    // the generic path helper while the display lock is held: that helper can
+    // report a false negative during the mount hand-off.
+    const char *root_dir = "/sdcard";
+#else
     const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" : (path_exists_dir("/sd") ? "/sd" : nullptr);
+#endif
     if (root_dir == nullptr) {
         terminal->append_text("serialrx: no SD root mountpoint\n");
         return false;
