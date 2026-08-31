@@ -175,6 +175,10 @@ void keypad_task(void *param)
             // Terminal text/update helpers take the display lock when they touch LVGL.
             // Avoid holding it across long commands such as SD config reads and Wi-Fi connect.
             if (ssh_terminal && ssh_screen) {
+                // Do not log the character itself: serial logs must not expose
+                // remote passwords. This marker is only a routing diagnostic.
+                ESP_LOGW("KEYPAD", "keypad routed to terminal (remote=%d)",
+                         ssh_terminal->is_connected() ? 1 : 0);
                 ssh_terminal->handle_key_input((char)key);
             }
         }

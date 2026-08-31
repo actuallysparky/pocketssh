@@ -130,6 +130,8 @@ private:
     LIBSSH2_CHANNEL *channel;
     SemaphoreHandle_t ssh_tx_mutex;
     QueueHandle_t ssh_input_queue;
+    std::atomic<uint32_t> ssh_input_enqueued{0};
+    std::atomic<uint32_t> ssh_input_written{0};
     
     char* hostname;
     int port_number;

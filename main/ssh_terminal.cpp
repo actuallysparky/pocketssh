@@ -5598,15 +5598,22 @@ void SSHTerminal::send_terminal_bytes(const std::string &bytes)
     }
 
     if (ssh_input_queue == nullptr) {
+        ESP_LOGE(TAG, "terminal input unavailable: queue allocation failed");
         return;
     }
+    uint32_t queued_count = 0;
     for (const unsigned char byte : bytes) {
         const uint8_t queued = byte;
         if (xQueueSend(ssh_input_queue, &queued, pdMS_TO_TICKS(100)) != pdTRUE) {
-            ESP_LOGW(TAG, "terminal input queue full; dropped byte 0x%02x", queued);
+            ESP_LOGW(TAG, "terminal input queue full; input byte dropped");
             return;
         }
+        ++queued_count;
     }
+    const uint32_t total_enqueued = ssh_input_enqueued.fetch_add(queued_count) + queued_count;
+    ESP_LOGW(TAG, "ssh tx queued=%u total=%u pending=%u", static_cast<unsigned>(queued_count),
+             static_cast<unsigned>(total_enqueued),
+             static_cast<unsigned>(uxQueueMessagesWaiting(ssh_input_queue)));
 }
 
 void SSHTerminal::copy_visible_terminal()
@@ -5661,6 +5668,7 @@ void SSHTerminal::ssh_receive_task(void* param)
             break;
         }
         bool sent_input = false;
+        uint32_t wrote_count = 0;
         uint8_t outbound = 0;
         // A missing queue means the terminal cannot accept input safely.  Do
         // not pass a null queue handle to FreeRTOS; leave the session alive
@@ -5672,6 +5680,7 @@ void SSHTerminal::ssh_receive_task(void* param)
                 const ssize_t write_rc = libssh2_channel_write(terminal->channel, &byte, 1);
                 if (write_rc == 1) {
                     sent_input = true;
+                    ++wrote_count;
                     break;
                 }
                 if (write_rc == LIBSSH2_ERROR_EAGAIN && terminal->session != nullptr &&
@@ -5691,6 +5700,12 @@ void SSHTerminal::ssh_receive_task(void* param)
             : LIBSSH2_ERROR_SOCKET_DISCONNECT;
         const bool channel_eof = libssh2_channel_eof(terminal->channel) != 0;
         xSemaphoreGive(terminal->ssh_tx_mutex);
+
+        if (wrote_count != 0) {
+            const uint32_t total_written = terminal->ssh_input_written.fetch_add(wrote_count) + wrote_count;
+            ESP_LOGW(TAG, "ssh tx wrote=%u total=%u", static_cast<unsigned>(wrote_count),
+                     static_cast<unsigned>(total_written));
+        }
         
         if (rc > 0) {
             buffer[rc] = '\0';
@@ -5698,7 +5713,9 @@ void SSHTerminal::ssh_receive_task(void* param)
             vTaskDelay(1);
         } else if (rc == LIBSSH2_ERROR_EAGAIN) {
             terminal->flush_display_buffer();
-            vTaskDelay(sent_input ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(100));
+            // Poll lightly while idle so physical keystrokes are serviced
+            // promptly even when the remote has no output pending.
+            vTaskDelay(sent_input ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(10));
         } else if (rc < 0) {
             ESP_LOGE(TAG, "Read error: %d", (int)rc);
             break;
