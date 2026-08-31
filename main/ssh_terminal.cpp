@@ -69,6 +69,9 @@ static std::string g_tdeck_wifi_config_cache_text;
 static bool g_tdeck_ssh_config_cache_ready = false;
 static std::string g_tdeck_ssh_config_cache_path;
 static std::string g_tdeck_ssh_config_cache_text;
+static bool g_tdeck_known_hosts_cache_ready = false;
+static std::string g_tdeck_known_hosts_cache_path;
+static std::string g_tdeck_known_hosts_cache_text;
 
 void pocketssh_set_cached_wifi_config_text(const char *path, const char *text)
 {
@@ -88,6 +91,16 @@ void pocketssh_set_cached_ssh_config_text(const char *path, const char *text)
     ESP_LOGW(TAG, "ssh_config cache: %s (%d byte(s))",
              g_tdeck_ssh_config_cache_path.empty() ? "<not found>" : g_tdeck_ssh_config_cache_path.c_str(),
              static_cast<int>(g_tdeck_ssh_config_cache_text.size()));
+}
+
+void pocketssh_set_cached_known_hosts_text(const char *path, const char *text)
+{
+    g_tdeck_known_hosts_cache_ready = true;
+    g_tdeck_known_hosts_cache_path = path != nullptr ? path : "";
+    g_tdeck_known_hosts_cache_text = text != nullptr ? text : "";
+    ESP_LOGW(TAG, "known_hosts cache: %s (%d byte(s))",
+             g_tdeck_known_hosts_cache_path.empty() ? "<not found>" : g_tdeck_known_hosts_cache_path.c_str(),
+             static_cast<int>(g_tdeck_known_hosts_cache_text.size()));
 }
 #endif
 
@@ -2526,6 +2539,10 @@ bool read_file_contents(const std::string &path, std::string *contents)
     }
 
 #if defined(TDECKPLUS_TARGET)
+    if (path == kKnownHostsPath && g_tdeck_known_hosts_cache_ready) {
+        *contents = g_tdeck_known_hosts_cache_text;
+        return !contents->empty();
+    }
     if (path.rfind("/sdcard/", 0) == 0 || path.rfind("/sd/", 0) == 0) {
         ESP_LOGW(TAG, "read_file_contents: skipping live SD read on T-Deck Plus for %s", path.c_str());
         return false;
@@ -4905,6 +4922,11 @@ bool SSHTerminal::save_pending_host_key()
         append_text("hostkey: atomic known_hosts update failed\n");
         return false;
     }
+#if defined(TDECKPLUS_TARGET)
+    // The UI never remounts the shared SD SPI bus after startup. Keep the
+    // session trust store coherent with the successful atomic update.
+    pocketssh_set_cached_known_hosts_text(kKnownHostsPath, (retained + replacement).c_str());
+#endif
     append_text("hostkey: accepted and saved; reconnect to continue\n");
     pending_host_key_host.clear();
     pending_host_key_type.clear();

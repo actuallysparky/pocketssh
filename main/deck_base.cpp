@@ -376,6 +376,7 @@ void load_ssh_keys_from_sd(SSHTerminal* terminal);
 #if defined(TDECKPLUS_TARGET)
 void pocketssh_set_cached_wifi_config_text(const char *path, const char *text);
 void pocketssh_set_cached_ssh_config_text(const char *path, const char *text);
+void pocketssh_set_cached_known_hosts_text(const char *path, const char *text);
 #endif
 
 #if defined(TDECKPLUS_TARGET)
@@ -491,6 +492,19 @@ static void cache_ssh_config_from_mounted_sd()
     }
 
     pocketssh_set_cached_ssh_config_text(nullptr, nullptr);
+}
+
+static void cache_known_hosts_from_mounted_sd()
+{
+    constexpr size_t kMaxKnownHostsBytes = 32 * 1024;
+    constexpr const char *kPath = "/sdcard/ssh_keys/known_hosts";
+    std::string text;
+    if (read_text_file_for_cache(kPath, kMaxKnownHostsBytes, &text)) {
+        pocketssh_set_cached_known_hosts_text(kPath, text.c_str());
+    } else {
+        // An absent store is an intentional, distinct first-use state.
+        pocketssh_set_cached_known_hosts_text(nullptr, nullptr);
+    }
 }
 #endif
 
@@ -774,6 +788,7 @@ void load_ssh_keys_from_sd(SSHTerminal* terminal)
 #if defined(TDECKPLUS_TARGET)
     cache_wifi_config_from_mounted_sd();
     cache_ssh_config_from_mounted_sd();
+    cache_known_hosts_from_mounted_sd();
 #endif
 
     // Open the ssh_keys directory
