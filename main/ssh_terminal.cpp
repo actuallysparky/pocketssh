@@ -4775,7 +4775,7 @@ void SSHTerminal::scroll_terminal_output(int steps)
 {
     if (ssh_connected) {
         terminal_core.scroll_view(steps);
-        if (display_lock(0)) {
+        if (display_lock(50)) {
             update_terminal_display();
             display_unlock();
         }
@@ -6264,35 +6264,43 @@ void SSHTerminal::update_status_bar()
 
 void SSHTerminal::update_terminal_display()
 {
-    if (terminal_grid == nullptr || !ssh_connected) {
+    if (terminal_output == nullptr || !ssh_connected) {
         return;
     }
 
-    lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
-    for (size_t row = 0; row < terminal_core.rows(); ++row) {
-        if (terminal_core.row_dirty(row)) render_terminal_grid_row(row);
+    // The T-Deck Plus' current LVGL composition path does not reliably paint
+    // a large dynamic tree of fixed-cell child labels after an SSH handoff.
+    // Keep the terminal core as the source of truth, but present its visible
+    // viewport through the established textarea until the styled grid has its
+    // own device-validated renderer.  This makes remote prompt/output and
+    // physical-keyboard echo reliable instead of leaving a blank surface.
+    if (terminal_grid != nullptr) {
+        lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+    const std::string text = terminal_core.plain_text();
+    lv_textarea_set_text(terminal_output, text.c_str());
     terminal_core.clear_dirty();
 }
 
 void SSHTerminal::show_ssh_terminal_view()
 {
-    // The local prompt lives in terminal_output.  SSH output is rendered only
-    // into terminal_grid, so this state change must happen at connection time
-    // rather than waiting for the first periodic repaint to win the LVGL lock.
+    // Use the established textarea as the reliable device presentation path
+    // while the terminal core owns parsing, cursor motion, and scrollback.
     if (!display_lock(200)) {
         ESP_LOGW(TAG, "SSH terminal view: display lock timeout");
         return;
     }
     if (terminal_output != nullptr) {
-        lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+        const std::string initial_text = terminal_core.plain_text();
+        lv_textarea_set_text(terminal_output, initial_text.c_str());
     }
     if (terminal_grid != nullptr) {
-        lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
     }
-    ESP_LOGW(TAG, "SSH terminal view active grid=%p rows=%u cols=%u",
-             static_cast<void *>(terminal_grid),
+    ESP_LOGW(TAG, "SSH terminal view active textarea=%p rows=%u cols=%u",
+             static_cast<void *>(terminal_output),
              static_cast<unsigned>(terminal_core.rows()),
              static_cast<unsigned>(terminal_core.columns()));
     display_unlock();
