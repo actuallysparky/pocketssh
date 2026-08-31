@@ -31,9 +31,11 @@ public:
     lv_obj_t* create_terminal_screen();
     
     esp_err_t connect(const char* host, int port, const char* username, const char* password,
-                      const std::string &strict_host_key_checking = "ask");
+                      const std::string &strict_host_key_checking = "ask", int server_alive_interval = 0,
+                      int server_alive_count_max = 3);
     esp_err_t connect_with_key(const char* host, int port, const char* username, const char* privkey_data,
-                               size_t privkey_len, const std::string &strict_host_key_checking = "ask");
+                               size_t privkey_len, const std::string &strict_host_key_checking = "ask",
+                               int server_alive_interval = 0, int server_alive_count_max = 3);
     esp_err_t disconnect();
     bool is_connected();
     
@@ -127,6 +129,9 @@ private:
     std::string pending_host_key_material;
     std::string pending_host_key_fingerprint;
     int pending_host_key_port = 0;
+    int server_alive_interval_seconds = 0;
+    int server_alive_count_max = 3;
+    int keepalive_failures = 0;
 
     // Terminal font mode contract:
     // - false: compact mode (~67x13)

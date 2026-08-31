@@ -3056,7 +3056,9 @@ bool connect_with_alias_identities(SSHTerminal *terminal, const ResolvedSSHConfi
                                            resolved.user.c_str(),
                                            loaded_key,
                                            key_len,
-                                           resolved.strict_host_key_checking) == ESP_OK) {
+                                           resolved.strict_host_key_checking,
+                                           resolved.server_alive_interval,
+                                           resolved.server_alive_count_max) == ESP_OK) {
                 connected = true;
                 break;
             }
@@ -3104,7 +3106,9 @@ bool connect_with_alias_identities(SSHTerminal *terminal, const ResolvedSSHConfi
                                        resolved.user.c_str(),
                                        key_data.c_str(),
                                        key_data.size(),
-                                       resolved.strict_host_key_checking) == ESP_OK) {
+                                       resolved.strict_host_key_checking,
+                                       resolved.server_alive_interval,
+                                       resolved.server_alive_count_max) == ESP_OK) {
             connected = true;
             break;
         }
@@ -4823,7 +4827,8 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
 }
 
 esp_err_t SSHTerminal::connect(const char* host, int port, const char* username, const char* password,
-                               const std::string &strict_host_key_checking)
+                               const std::string &strict_host_key_checking, int server_alive_interval,
+                               int server_alive_count)
 {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "WiFi not connected");
@@ -4918,6 +4923,10 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     }
 
     libssh2_session_set_blocking(session, 0);
+    server_alive_interval_seconds = std::max(0, server_alive_interval);
+    server_alive_count_max = std::max(1, server_alive_count);
+    keepalive_failures = 0;
+    libssh2_keepalive_config(session, 1, static_cast<unsigned int>(server_alive_interval_seconds));
 
     append_text("Performing SSH handshake...\n");
     while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN);
@@ -4976,7 +4985,8 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
 }
 
 esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data,
-                                        size_t privkey_len, const std::string &strict_host_key_checking)
+                                        size_t privkey_len, const std::string &strict_host_key_checking,
+                                        int server_alive_interval, int server_alive_count)
 {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "WiFi not connected");
@@ -5077,6 +5087,10 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     }
 
     libssh2_session_set_blocking(session, 0);
+    server_alive_interval_seconds = std::max(0, server_alive_interval);
+    server_alive_count_max = std::max(1, server_alive_count);
+    keepalive_failures = 0;
+    libssh2_keepalive_config(session, 1, static_cast<unsigned int>(server_alive_interval_seconds));
 
     append_text("Performing SSH handshake...\n");
     ESP_LOGW(TAG, "ssh key connect: handshake start");
@@ -5369,6 +5383,22 @@ void SSHTerminal::ssh_receive_task(void* param)
             ESP_LOGI(TAG, "Channel EOF");
             terminal->flush_display_buffer();
             break;
+        }
+
+        if (terminal->server_alive_interval_seconds > 0 && terminal->session != nullptr) {
+            int seconds_to_next = 0;
+            const int keepalive_rc = libssh2_keepalive_send(terminal->session, &seconds_to_next);
+            if (keepalive_rc == 0 || keepalive_rc == LIBSSH2_ERROR_EAGAIN) {
+                terminal->keepalive_failures = 0;
+            } else {
+                ++terminal->keepalive_failures;
+                ESP_LOGW(TAG, "ssh keepalive failed rc=%d (%d/%d)", keepalive_rc,
+                         terminal->keepalive_failures, terminal->server_alive_count_max);
+                if (terminal->keepalive_failures >= terminal->server_alive_count_max) {
+                    terminal->append_text("SSH keepalive failed; session closed. Re-run connect <alias>.\n");
+                    break;
+                }
+            }
         }
         
         vTaskDelay(1);
