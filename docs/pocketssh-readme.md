@@ -7,6 +7,10 @@ This repository is a focused fork of the original PocketSSH project:
 
 This variant focuses on the LilyGO T-Lora Pager / T-Pager hardware, while preserving the upstream T-Deck Plus baseline and carrying the shared SSH/Wi-Fi/profile UX forward.
 
+On T-Deck Plus, the supplied PocketSSH GIF is retained in the asset pack; its
+first frame is rendered as the startup splash because the full LVGL GIF decoder
+starves the device UI task and triggers the watchdog.
+
 ## v1.1 Highlights (T-Lora Pager)
 - T-Pager hardware bring-up and clean firmware packaging.
 - OpenSSH-style host aliases from `/sdcard/ssh_keys/ssh_config`:

@@ -33,6 +33,7 @@ else()
         "c3_keyboard.cpp"
         "ssh_terminal.cpp"
         "terminal_core.cpp"
+        "lvgl_pocketssh_img/pocketssh_splash_static.c"
     )
 endif()
 
@@ -91,16 +92,6 @@ idf_component_register(
     INCLUDE_DIRS ${INCLUDE_DIRS}
     REQUIRES ${REQUIRED_COMPONENTS}
 )
-
-# Keep the supplied T-Deck splash animation intact and embed it as a compact
-# raw GIF.  LVGL's GIF widget decodes it at runtime, avoiding a large flash
-# cost for pre-expanded RGB565 animation frames.
-if(NOT TPAGER_DIAG AND NOT TPAGER_TARGET)
-    target_add_binary_data(${COMPONENT_LIB}
-        "${CMAKE_CURRENT_LIST_DIR}/../assets/PocketSSH_Splash_Pack/assets/t-deck/pocket_ssh_t-deck_runtime_160x120.gif"
-        "BINARY"
-        RENAME_TO "pocketssh_splash_gif")
-endif()
 
 # Add version number as compile definition
 target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETSSH_VERSION="${PROJECT_VER}")
