@@ -3994,6 +3994,25 @@ void SSHTerminal::handle_key_input(char key)
             event.codepoint = static_cast<unsigned char>(key);
         }
         send_terminal_bytes(terminal_core.encode_key(event));
+
+        // SSH input is transmitted immediately, but a short local preview in
+        // the footer gives physical-keyboard users confirmation before the
+        // remote side echoes the completed line.  It is display-only: the
+        // remote channel remains byte-oriented and receives every key now.
+        if (key == '\n' || key == '\r') {
+            current_input.clear();
+            cursor_pos = 0;
+        } else if (key == 8 || key == 127) {
+            if (cursor_pos > 0 && !current_input.empty()) {
+                current_input.erase(cursor_pos - 1, 1);
+                --cursor_pos;
+            }
+        } else if (key >= 32 && key <= 126) {
+            current_input.insert(cursor_pos, 1, key);
+            ++cursor_pos;
+        }
+        cursor_visible = true;
+        update_input_display();
         return;
     }
 
@@ -4402,11 +4421,13 @@ void SSHTerminal::update_input_display()
         cursor_pos = current_input.length();
     }
     
-    std::string full_text = "> " + current_input;
+    const char *prompt = ssh_connected ? "ssh> " : "> ";
+    const size_t prompt_length = strlen(prompt);
+    std::string full_text = std::string(prompt) + current_input;
     
     // Insert cursor at correct position
     if (cursor_visible) {
-        size_t display_pos = 2 + cursor_pos; // 2 = length of "> "
+        size_t display_pos = prompt_length + cursor_pos;
         full_text.insert(display_pos, "|");
     }
     
