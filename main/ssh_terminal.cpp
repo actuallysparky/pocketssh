@@ -5306,6 +5306,7 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     // blank row from the serial-control task; the receive path will render
     // only rows touched by the first server bytes.
     terminal_core.clear_dirty();
+    show_ssh_terminal_view();
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
@@ -5484,6 +5485,7 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     ssh_connected = true;
     terminal_core.reset();
     terminal_core.clear_dirty();
+    show_ssh_terminal_view();
     connected_ssh_host = host != nullptr ? host : "";
     if (port != 22 && !connected_ssh_host.empty()) {
         connected_ssh_host += ":" + std::to_string(port);
@@ -5909,7 +5911,10 @@ void SSHTerminal::process_received_data(const char* data, size_t len)
 void SSHTerminal::flush_display_buffer()
 {
     if (ssh_connected) {
-        if (display_lock(0)) {
+        // The receive task must not silently lose every repaint whenever LVGL
+        // happens to be in a short input/layout transaction.  A bounded wait
+        // preserves watchdog safety while letting SSH output become visible.
+        if (display_lock(50)) {
             update_terminal_display();
             display_unlock();
         }
@@ -6269,6 +6274,28 @@ void SSHTerminal::update_terminal_display()
         if (terminal_core.row_dirty(row)) render_terminal_grid_row(row);
     }
     terminal_core.clear_dirty();
+}
+
+void SSHTerminal::show_ssh_terminal_view()
+{
+    // The local prompt lives in terminal_output.  SSH output is rendered only
+    // into terminal_grid, so this state change must happen at connection time
+    // rather than waiting for the first periodic repaint to win the LVGL lock.
+    if (!display_lock(200)) {
+        ESP_LOGW(TAG, "SSH terminal view: display lock timeout");
+        return;
+    }
+    if (terminal_output != nullptr) {
+        lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (terminal_grid != nullptr) {
+        lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+    }
+    ESP_LOGW(TAG, "SSH terminal view active grid=%p rows=%u cols=%u",
+             static_cast<void *>(terminal_grid),
+             static_cast<unsigned>(terminal_core.rows()),
+             static_cast<unsigned>(terminal_core.columns()));
+    display_unlock();
 }
 
 void SSHTerminal::rebuild_terminal_grid()
