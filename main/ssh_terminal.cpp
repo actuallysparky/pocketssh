@@ -6562,6 +6562,10 @@ void SSHTerminal::toggle_side_panel()
     if (!side_panel) return;
     
     if (lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN)) {
+        // Repositioning alone does not make an LVGL object visible.  This
+        // omission left every gesture path functional but the controls
+        // permanently invisible.
+        lv_obj_clear_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
     } else {
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
