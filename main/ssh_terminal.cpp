@@ -229,13 +229,6 @@ size_t select_scrollback_capacity(size_t columns, size_t rows)
     // PSRAM on this target. Reserve room for vectors and other session state,
     // then choose the first capacity that can be safely represented there.
     const size_t psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#if CONFIG_SPIRAM
-    // The ESP-IDF PSRAM heap comes online immediately after startup, but the
-    // terminal object is constructed during early application setup where the
-    // capability query can still transiently report zero. This target has
-    // mandatory 8 MiB PSRAM, so preserve the 512-row contract in that case.
-    if (psram == 0) return 512;
-#endif
     // Scrollback rows allocate lazily as output arrives.  Requiring all 512
     // rows to fit as one contiguous allocation would spuriously select 64 on
     // a healthy boot, even with ample PSRAM.  Keep the requested 512-row
