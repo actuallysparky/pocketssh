@@ -160,6 +160,11 @@ private:
     bool terminal_grid_touch_scroll_active;
     int32_t terminal_grid_touch_last_y;
     int32_t terminal_grid_touch_accum_y;
+    bool terminal_grid_selection_active;
+    size_t terminal_selection_start_row;
+    size_t terminal_selection_start_col;
+    size_t terminal_selection_end_row;
+    size_t terminal_selection_end_col;
     
     void update_terminal_display();
     void rebuild_terminal_grid();

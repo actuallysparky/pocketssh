@@ -107,6 +107,7 @@ void test_utf8_replacement_and_viewport_copy()
     term.feed(text, std::strlen(text));
     term.scroll_view(1);
     assert(term.plain_text().substr(0, 1) == "b");
+    assert(term.text_region(0, 0, 0, 0) == "b");
 }
 
 }  // namespace

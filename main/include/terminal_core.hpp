@@ -61,6 +61,7 @@ public:
     bool row_dirty(size_t visible_row) const;
     void clear_dirty();
     std::string plain_text() const;
+    std::string text_region(size_t start_row, size_t start_col, size_t end_row, size_t end_col) const;
     std::string encode_key(const KeyEvent &event) const;
 
 private:

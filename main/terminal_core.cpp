@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <tuple>
 
 namespace pocketssh {
 namespace {
@@ -455,6 +456,25 @@ std::string TerminalCore::plain_text() const
             }
         }
         if (r + 1 < rows_) out.push_back('\n');
+    }
+    return out;
+}
+
+std::string TerminalCore::text_region(size_t start_row, size_t start_col, size_t end_row, size_t end_col) const
+{
+    if (rows_ == 0 || columns_ == 0) return {};
+    start_row = std::min(start_row, rows_ - 1); end_row = std::min(end_row, rows_ - 1);
+    start_col = std::min(start_col, columns_ - 1); end_col = std::min(end_col, columns_ - 1);
+    if (std::tie(end_row, end_col) < std::tie(start_row, start_col)) { std::swap(start_row, end_row); std::swap(start_col, end_col); }
+    std::string out;
+    for (size_t r = start_row; r <= end_row; ++r) {
+        const size_t first = r == start_row ? start_col : 0;
+        const size_t last = r == end_row ? end_col : columns_ - 1;
+        for (size_t c = first; c <= last; ++c) {
+            const uint32_t cp = row(r)[c].codepoint;
+            if (cp >= 0x20 && cp <= 0x7e) out.push_back(static_cast<char>(cp)); else out.push_back('?');
+        }
+        if (r != end_row) out.push_back('\n');
     }
     return out;
 }

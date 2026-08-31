@@ -3275,7 +3275,12 @@ SSHTerminal::SSHTerminal()
       terminal_output_touch_scroll_y(0),
       terminal_grid_touch_scroll_active(false),
       terminal_grid_touch_last_y(0),
-      terminal_grid_touch_accum_y(0)
+      terminal_grid_touch_accum_y(0),
+      terminal_grid_selection_active(false),
+      terminal_selection_start_row(0),
+      terminal_selection_start_col(0),
+      terminal_selection_end_row(0),
+      terminal_selection_end_col(0)
 {
     vTaskDelay(pdMS_TO_TICKS(100));
     load_theme_color_from_nvs();
@@ -3701,6 +3706,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_SCROLL, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_SCROLL_END, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_LONG_PRESSED, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_RELEASED, this);
     lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
@@ -4283,6 +4289,29 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
             terminal->terminal_grid_touch_accum_y = 0;
             return;
         }
+        const auto selected_cell = [terminal, target, point](size_t *row, size_t *col) {
+            lv_area_t area;
+            lv_obj_get_coords(target, &area);
+            const lv_font_t *font = terminal->terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
+            const int cell_width = std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
+            const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
+            const long x_cell = (point.x - area.x1) / cell_width;
+            const long y_cell = (point.y - area.y1) / cell_height;
+            *col = static_cast<size_t>(std::clamp(x_cell, 0L, static_cast<long>(terminal->terminal_core.columns() - 1)));
+            *row = static_cast<size_t>(std::clamp(y_cell, 0L, static_cast<long>(terminal->terminal_core.rows() - 1)));
+        };
+        if (code == LV_EVENT_LONG_PRESSED) {
+            selected_cell(&terminal->terminal_selection_start_row, &terminal->terminal_selection_start_col);
+            terminal->terminal_selection_end_row = terminal->terminal_selection_start_row;
+            terminal->terminal_selection_end_col = terminal->terminal_selection_start_col;
+            terminal->terminal_grid_selection_active = true;
+            terminal->terminal_grid_touch_scroll_active = false;
+            return;
+        }
+        if (code == LV_EVENT_PRESSING && terminal->terminal_grid_selection_active) {
+            selected_cell(&terminal->terminal_selection_end_row, &terminal->terminal_selection_end_col);
+            return;
+        }
         if (code == LV_EVENT_PRESSING && terminal->terminal_grid_touch_scroll_active) {
             terminal->terminal_grid_touch_accum_y += point.y - terminal->terminal_grid_touch_last_y;
             terminal->terminal_grid_touch_last_y = point.y;
@@ -4300,6 +4329,16 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
             return;
         }
         if (code == LV_EVENT_RELEASED || code == LV_EVENT_SCROLL_END) {
+            if (terminal->terminal_grid_selection_active) {
+                std::string copied = terminal->terminal_core.text_region(terminal->terminal_selection_start_row,
+                    terminal->terminal_selection_start_col, terminal->terminal_selection_end_row,
+                    terminal->terminal_selection_end_col);
+                const bool truncated = copied.size() > 4096;
+                if (truncated) copied.resize(4096);
+                terminal->device_clipboard = std::move(copied);
+                terminal->terminal_grid_selection_active = false;
+                terminal->append_text(truncated ? "copy: selection truncated to 4096 bytes\n" : "copy: selection saved to device clipboard\n");
+            }
             terminal->terminal_grid_touch_scroll_active = false;
             terminal->terminal_grid_touch_accum_y = 0;
             lv_obj_scroll_to_y(target, 0, LV_ANIM_OFF);
