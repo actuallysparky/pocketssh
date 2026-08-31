@@ -53,6 +53,8 @@ public:
     void move_cursor_end();
     void scroll_terminal_output(int steps);
     void toggle_special_keys_panel();
+    void remember_reconnect_alias(const std::string &alias);
+    void reconnect_last_session();
     
     esp_err_t init_wifi(const char* ssid, const char* password);
     bool is_wifi_connected();
@@ -124,6 +126,7 @@ private:
     // Connection context shown in the status bar.
     std::string connected_wifi_ssid;
     std::string connected_ssh_host;
+    std::string reconnect_alias;
     std::string pending_host_key_host;
     std::string pending_host_key_type;
     std::string pending_host_key_material;

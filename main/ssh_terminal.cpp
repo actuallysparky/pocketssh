@@ -3131,6 +3131,7 @@ void connect_using_ssh_alias(SSHTerminal *terminal, const std::string &alias)
     if (terminal == nullptr || alias.empty()) {
         return;
     }
+    terminal->remember_reconnect_alias(alias);
 
     ResolvedSSHConfig resolved = {};
     if (!resolve_ssh_alias(alias, &resolved)) {
@@ -3576,6 +3577,27 @@ void SSHTerminal::try_boot_wifi_auto_connect()
     }
 }
 
+void SSHTerminal::remember_reconnect_alias(const std::string &alias)
+{
+    reconnect_alias = alias;
+}
+
+void SSHTerminal::reconnect_last_session()
+{
+    if (reconnect_alias.empty()) {
+        append_text("reconnect: no prior SSH alias\n");
+        return;
+    }
+    if (ssh_connected) {
+        append_text("reconnect: SSH is already connected; disconnect first\n");
+        return;
+    }
+    append_text("reconnect: ");
+    append_text(reconnect_alias.c_str());
+    append_text("\n");
+    connect_using_ssh_alias(this, reconnect_alias);
+}
+
 lv_obj_t* SSHTerminal::create_terminal_screen()
 {
     load_theme_color_preference();
@@ -3895,6 +3917,9 @@ void SSHTerminal::handle_key_input(char key)
                     append_text("\n");
                 }
             }
+            else if (current_input == "reconnect") {
+                reconnect_last_session();
+            }
             else if (current_input.rfind("connect ", 0) == 0) {
                 const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
 
@@ -4095,6 +4120,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("  ssh <ALIAS> - Resolve alias from ssh_config and connect via key\n");
                 append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
                 append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> - Connect via SSH with private key\n");
+                append_text("  reconnect - Reconnect the last SSH alias with host-key validation\n");
                 append_text("    Note: Place .pem keys in /sdcard/ssh_keys/ or /sd/ssh_keys/\n");
 #if defined(TPAGER_TARGET)
                 append_text("  shutdown | poweroff - Deep sleep (wake via BOOT or encoder button)\n");
