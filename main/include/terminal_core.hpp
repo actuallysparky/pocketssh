@@ -53,6 +53,9 @@ public:
     bool application_cursor_keys() const { return application_cursor_keys_; }
     bool bracketed_paste() const { return bracketed_paste_; }
     bool alternate_screen_active() const { return alternate_screen_active_; }
+    size_t scrollback_size() const { return scrollback_.size(); }
+    size_t scrollback_offset() const { return scrollback_offset_; }
+    void scroll_view(int lines);
 
     const std::vector<TerminalCell> &row(size_t visible_row) const;
     bool row_dirty(size_t visible_row) const;
@@ -69,6 +72,7 @@ private:
     std::vector<std::vector<TerminalCell>> normal_;
     std::vector<std::vector<TerminalCell>> alternate_;
     std::vector<std::vector<TerminalCell>> scrollback_;
+    size_t scrollback_offset_ = 0;
     std::vector<bool> dirty_rows_;
     bool alternate_screen_active_ = false;
     bool application_cursor_keys_ = false;

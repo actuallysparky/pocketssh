@@ -76,6 +76,7 @@ void TerminalCore::reset()
     normal_.assign(rows_, blank_row());
     alternate_.assign(rows_, blank_row());
     scrollback_.clear();
+    scrollback_offset_ = 0;
     alternate_screen_active_ = false;
     application_cursor_keys_ = false;
     bracketed_paste_ = false;
@@ -130,6 +131,7 @@ void TerminalCore::scroll_up(size_t count)
         if (!alternate_screen_active_ && scroll_top_ == 0) {
             scrollback_.push_back(active[scroll_top_]);
             if (scrollback_.size() > scrollback_limit_) scrollback_.erase(scrollback_.begin());
+            scrollback_offset_ = 0;
         }
         for (size_t row = scroll_top_; row < scroll_bottom_; ++row) active[row] = active[row + 1];
         active[scroll_bottom_] = blank_row();
@@ -406,7 +408,23 @@ void TerminalCore::feed(const char *bytes, size_t length)
 const std::vector<TerminalCell> &TerminalCore::row(size_t visible_row) const
 {
     static const std::vector<TerminalCell> empty;
-    return visible_row < rows_ ? screen()[visible_row] : empty;
+    if (visible_row >= rows_ || alternate_screen_active_ || scrollback_offset_ == 0) {
+        return visible_row < rows_ ? screen()[visible_row] : empty;
+    }
+    const size_t history_rows = scrollback_.size();
+    const size_t total_rows = history_rows + rows_;
+    const size_t start = total_rows > rows_ + scrollback_offset_ ? total_rows - rows_ - scrollback_offset_ : 0;
+    const size_t index = start + visible_row;
+    if (index < history_rows) return scrollback_[index];
+    return screen()[index - history_rows];
+}
+
+void TerminalCore::scroll_view(int lines)
+{
+    if (alternate_screen_active_ || lines == 0) return;
+    const int64_t requested = static_cast<int64_t>(scrollback_offset_) + lines;
+    scrollback_offset_ = static_cast<size_t>(std::clamp<int64_t>(requested, 0, static_cast<int64_t>(scrollback_.size())));
+    mark_all_dirty();
 }
 
 bool TerminalCore::row_dirty(size_t visible_row) const { return visible_row < dirty_rows_.size() && dirty_rows_[visible_row]; }

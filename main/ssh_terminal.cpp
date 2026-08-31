@@ -4527,6 +4527,14 @@ void SSHTerminal::move_cursor_end()
 
 void SSHTerminal::scroll_terminal_output(int steps)
 {
+    if (ssh_connected) {
+        terminal_core.scroll_view(steps);
+        if (display_lock(0)) {
+            update_terminal_display();
+            display_unlock();
+        }
+        return;
+    }
     lv_obj_t *active_output = ssh_connected && terminal_grid ? terminal_grid : terminal_output;
     if (active_output == nullptr || steps == 0) {
         return;

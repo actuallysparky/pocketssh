@@ -75,6 +75,23 @@ void test_truecolor_and_utf8_streaming()
     assert(term.row(0)[1].codepoint == 0x2603);
 }
 
+void test_scrollback_viewport_and_limit()
+{
+    TerminalCore term(4, 2, 2);
+    const char text[] = "a\r\nb\r\nc\r\nd";
+    term.feed(text, std::strlen(text));
+    assert(term.scrollback_size() == 2);
+    assert(term.row(0)[0].codepoint == 'c');
+    term.scroll_view(1);
+    assert(term.scrollback_offset() == 1);
+    assert(term.row(0)[0].codepoint == 'b');
+    term.scroll_view(99);
+    assert(term.scrollback_offset() == 2);
+    assert(term.row(0)[0].codepoint == 'a');
+    term.scroll_view(-99);
+    assert(term.scrollback_offset() == 0);
+}
+
 }  // namespace
 
 int main()
@@ -83,6 +100,7 @@ int main()
     test_alternate_screen_and_modes();
     test_scroll_and_key_encoding();
     test_truecolor_and_utf8_streaming();
+    test_scrollback_viewport_and_limit();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }
