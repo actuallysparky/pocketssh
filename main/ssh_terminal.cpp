@@ -5894,15 +5894,14 @@ void SSHTerminal::rebuild_terminal_grid()
     const int width = std::max(1, static_cast<int>(lv_obj_get_content_width(terminal_grid)));
     terminal_grid_rows.reserve(terminal_core.rows());
     for (size_t row = 0; row < terminal_core.rows(); ++row) {
-        lv_obj_t *line = lv_spangroup_create(terminal_grid);
+        lv_obj_t *line = lv_obj_create(terminal_grid);
         lv_obj_set_size(line, width, line_height);
         lv_obj_set_pos(line, 0, static_cast<int32_t>(row * line_height));
         lv_obj_set_style_bg_opa(line, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(line, 0, 0);
         lv_obj_set_style_pad_all(line, 0, 0);
         lv_obj_set_style_text_font(line, font, 0);
-        lv_spangroup_set_mode(line, LV_SPAN_MODE_FIXED);
-        lv_spangroup_set_max_lines(line, 1);
+        lv_obj_set_scrollbar_mode(line, LV_SCROLLBAR_MODE_OFF);
         terminal_grid_rows.push_back(line);
     }
 }
@@ -5916,15 +5915,14 @@ void SSHTerminal::render_terminal_grid_row(size_t row_index)
     lv_obj_delete(terminal_grid_rows[row_index]);
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
     const int line_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
-    lv_obj_t *line = lv_spangroup_create(terminal_grid);
+    lv_obj_t *line = lv_obj_create(terminal_grid);
     lv_obj_set_size(line, std::max(1, static_cast<int>(lv_obj_get_content_width(terminal_grid))), line_height);
     lv_obj_set_pos(line, 0, static_cast<int32_t>(row_index * line_height));
     lv_obj_set_style_bg_opa(line, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(line, 0, 0);
     lv_obj_set_style_pad_all(line, 0, 0);
     lv_obj_set_style_text_font(line, font, 0);
-    lv_spangroup_set_mode(line, LV_SPAN_MODE_FIXED);
-    lv_spangroup_set_max_lines(line, 1);
+    lv_obj_set_scrollbar_mode(line, LV_SCROLLBAR_MODE_OFF);
     terminal_grid_rows[row_index] = line;
     const auto &cells = terminal_core.row(row_index);
     size_t start = 0;
@@ -5944,21 +5942,26 @@ void SSHTerminal::render_terminal_grid_row(size_t row_index)
         if (cell.style & pocketssh::CellStyleInverse) std::swap(foreground, background);
         if (cell.style & pocketssh::CellStyleConceal) foreground = background;
 
-        lv_span_t *span = lv_spangroup_add_span(line);
-        lv_span_set_text(span, text.c_str());
-        lv_style_t style;
-        lv_style_init(&style);
-        lv_style_set_text_color(&style, lv_color_hex(foreground));
-        lv_style_set_text_opa(&style, (cell.style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER);
+        const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
+        const int cell_width = std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
+        lv_obj_t *label = lv_label_create(line);
+        lv_label_set_text(label, text.c_str());
+        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+        lv_obj_set_pos(label, static_cast<int32_t>(start * cell_width), 0);
+        lv_obj_set_size(label, static_cast<int32_t>((end - start) * cell_width), line_height);
+        lv_obj_set_style_pad_all(label, 0, 0);
+        lv_obj_set_style_border_width(label, 0, 0);
+        lv_obj_set_style_text_font(label, font, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(foreground), 0);
+        lv_obj_set_style_text_opa(label, (cell.style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(label, lv_color_hex(background), 0);
+        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
         lv_text_decor_t decor = LV_TEXT_DECOR_NONE;
         if (cell.style & pocketssh::CellStyleUnderline) decor = static_cast<lv_text_decor_t>(decor | LV_TEXT_DECOR_UNDERLINE);
         if (cell.style & pocketssh::CellStyleStrike) decor = static_cast<lv_text_decor_t>(decor | LV_TEXT_DECOR_STRIKETHROUGH);
-        lv_style_set_text_decor(&style, decor);
-        lv_spangroup_set_span_style(line, span, &style);
-        lv_style_reset(&style);
+        lv_obj_set_style_text_decor(label, decor, 0);
         start = end;
     }
-    lv_spangroup_refresh(line);
 }
 
 void SSHTerminal::create_side_panel()
