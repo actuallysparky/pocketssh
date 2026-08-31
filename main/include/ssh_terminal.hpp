@@ -30,8 +30,10 @@ public:
 
     lv_obj_t* create_terminal_screen();
     
-    esp_err_t connect(const char* host, int port, const char* username, const char* password);
-    esp_err_t connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len);
+    esp_err_t connect(const char* host, int port, const char* username, const char* password,
+                      const std::string &strict_host_key_checking = "ask");
+    esp_err_t connect_with_key(const char* host, int port, const char* username, const char* privkey_data,
+                               size_t privkey_len, const std::string &strict_host_key_checking = "ask");
     esp_err_t disconnect();
     bool is_connected();
     
@@ -120,6 +122,11 @@ private:
     // Connection context shown in the status bar.
     std::string connected_wifi_ssid;
     std::string connected_ssh_host;
+    std::string pending_host_key_host;
+    std::string pending_host_key_type;
+    std::string pending_host_key_material;
+    std::string pending_host_key_fingerprint;
+    int pending_host_key_port = 0;
 
     // Terminal font mode contract:
     // - false: compact mode (~67x13)
@@ -147,6 +154,8 @@ private:
     void flush_display_buffer();
     void send_terminal_bytes(const std::string &bytes);
     void sync_terminal_geometry(bool notify_remote);
+    bool verify_host_key(const char *host, int port, const std::string &strict_host_key_checking);
+    bool save_pending_host_key();
     
     void load_history_from_nvs();
     void save_history_to_nvs();

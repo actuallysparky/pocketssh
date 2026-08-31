@@ -468,6 +468,7 @@ constexpr const char *kSshKeysRoot = "/sdcard/ssh_keys/";
 constexpr const char *kSshKeysRootAlt = "/sd/ssh_keys/";
 constexpr const char *kSshKeysDir = "/sdcard/ssh_keys";
 constexpr const char *kSshKeysDirAlt = "/sd/ssh_keys";
+constexpr const char *kKnownHostsPath = "/sdcard/ssh_keys/known_hosts";
 constexpr const char *kWifiConfigPath = "/sdcard/ssh_keys/wifi_config";
 constexpr const char *kWifiConfigPathRoot = "/sdcard/wifi_config";
 constexpr const char *kWifiConfigPathAlt = "/sd/ssh_keys/wifi_config";
@@ -534,6 +535,8 @@ struct ResolvedSSHConfig {
     bool identities_only = false;
     std::vector<std::string> identity_files;
     std::string strict_host_key_checking = "ask";
+    int server_alive_interval = 0;
+    int server_alive_count_max = 3;
     std::string network;
 };
 
@@ -551,6 +554,31 @@ std::string resolve_wifi_config_path();
 bool parse_ssh_config_file(SSHConfigFile *parsed);
 bool parse_wifi_config_file(std::vector<WifiProfile> *profiles);
 bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name);
+
+std::string hex_encode(const unsigned char *data, size_t length)
+{
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(length * 2);
+    for (size_t index = 0; index < length; ++index) {
+        encoded.push_back(kDigits[(data[index] >> 4) & 0x0f]);
+        encoded.push_back(kDigits[data[index] & 0x0f]);
+    }
+    return encoded;
+}
+
+const char *host_key_type_name(int type)
+{
+    switch (type) {
+    case LIBSSH2_HOSTKEY_TYPE_RSA: return "ssh-rsa";
+    case LIBSSH2_HOSTKEY_TYPE_DSS: return "ssh-dss";
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_256: return "ecdsa-sha2-nistp256";
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_384: return "ecdsa-sha2-nistp384";
+    case LIBSSH2_HOSTKEY_TYPE_ECDSA_521: return "ecdsa-sha2-nistp521";
+    case LIBSSH2_HOSTKEY_TYPE_ED25519: return "ssh-ed25519";
+    default: return "unknown";
+    }
+}
 
 std::string abbreviate_status_value(const std::string &value, size_t max_len)
 {
@@ -2431,6 +2459,8 @@ bool resolve_ssh_alias(const std::string &alias, ResolvedSSHConfig *resolved)
     resolved->strict_host_key_checking = effective.has_strict_host_key_checking
                                              ? effective.strict_host_key_checking
                                              : "ask";
+    resolved->server_alive_interval = effective.has_server_alive_interval ? effective.server_alive_interval : 0;
+    resolved->server_alive_count_max = effective.has_server_alive_count_max ? effective.server_alive_count_max : 3;
     resolved->network = effective.has_network ? effective.network : "";
     return true;
 }
@@ -3025,7 +3055,8 @@ bool connect_with_alias_identities(SSHTerminal *terminal, const ResolvedSSHConfi
                                            resolved.port,
                                            resolved.user.c_str(),
                                            loaded_key,
-                                           key_len) == ESP_OK) {
+                                           key_len,
+                                           resolved.strict_host_key_checking) == ESP_OK) {
                 connected = true;
                 break;
             }
@@ -3072,7 +3103,8 @@ bool connect_with_alias_identities(SSHTerminal *terminal, const ResolvedSSHConfi
                                        resolved.port,
                                        resolved.user.c_str(),
                                        key_data.c_str(),
-                                       key_data.size()) == ESP_OK) {
+                                       key_data.size(),
+                                       resolved.strict_host_key_checking) == ESP_OK) {
             connected = true;
             break;
         }
@@ -3833,6 +3865,30 @@ void SSHTerminal::handle_key_input(char key)
                     } else if (set_theme_color_by_name(args[0], true)) {
                         save_theme_color_to_nvs();
                     }
+                }
+            }
+            else if (current_input == "hostkey accept" || current_input == "hostkey replace") {
+                save_pending_host_key();
+            }
+            else if (current_input == "hostkey reject") {
+                pending_host_key_host.clear();
+                pending_host_key_type.clear();
+                pending_host_key_material.clear();
+                pending_host_key_fingerprint.clear();
+                pending_host_key_port = 0;
+                append_text("hostkey: pending key rejected\n");
+            }
+            else if (current_input == "hostkey show") {
+                if (pending_host_key_host.empty()) {
+                    append_text("hostkey: no pending key\n");
+                } else {
+                    append_text("hostkey: ");
+                    append_text(pending_host_key_host.c_str());
+                    const std::string host_port = ":" + std::to_string(pending_host_key_port);
+                    append_text(host_port.c_str());
+                    append_text(" ");
+                    append_text(pending_host_key_fingerprint.c_str());
+                    append_text("\n");
                 }
             }
             else if (current_input.rfind("connect ", 0) == 0) {
@@ -4671,7 +4727,103 @@ int SSHTerminal::waitsocket(int socket_fd, LIBSSH2_SESSION *session)
     return rc;
 }
 
-esp_err_t SSHTerminal::connect(const char* host, int port, const char* username, const char* password)
+bool SSHTerminal::save_pending_host_key()
+{
+    if (pending_host_key_host.empty() || pending_host_key_port <= 0 || pending_host_key_type.empty() ||
+        pending_host_key_material.empty()) {
+        append_text("hostkey: no pending key to save\n");
+        return false;
+    }
+    ScopedSDMount mount_guard = {};
+    if (!mount_guard.ok()) {
+        append_text("hostkey: SD mount failed; key was not saved\n");
+        return false;
+    }
+    mkdir(kSshKeysDir, 0755);
+    std::string existing;
+    read_file_contents(kKnownHostsPath, &existing);
+    const std::string identity = pending_host_key_host + " " + std::to_string(pending_host_key_port) + " ";
+    std::istringstream lines(existing);
+    std::string line;
+    std::string retained;
+    while (std::getline(lines, line)) {
+        if (line.rfind(identity, 0) != 0) retained += line + "\n";
+    }
+    const std::string replacement = identity + pending_host_key_type + " " + pending_host_key_material + "\n";
+    const std::string temporary = std::string(kKnownHostsPath) + ".tmp";
+    FILE *file = std::fopen(temporary.c_str(), "wb");
+    const bool wrote = file != nullptr && std::fwrite(retained.data(), 1, retained.size(), file) == retained.size() &&
+                       std::fwrite(replacement.data(), 1, replacement.size(), file) == replacement.size();
+    const bool closed = file != nullptr && std::fclose(file) == 0;
+    if (!wrote || !closed || std::rename(temporary.c_str(), kKnownHostsPath) != 0) {
+        std::remove(temporary.c_str());
+        append_text("hostkey: atomic known_hosts update failed\n");
+        return false;
+    }
+    append_text("hostkey: accepted and saved; reconnect to continue\n");
+    pending_host_key_host.clear();
+    pending_host_key_type.clear();
+    pending_host_key_material.clear();
+    pending_host_key_fingerprint.clear();
+    pending_host_key_port = 0;
+    return true;
+}
+
+bool SSHTerminal::verify_host_key(const char *host, int port, const std::string &strict_host_key_checking)
+{
+    size_t key_length = 0;
+    int key_type = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char *key = libssh2_session_hostkey(session, &key_length, &key_type);
+    const char *fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
+    if (key == nullptr || key_length == 0 || fingerprint == nullptr) {
+        append_text("ERROR: SSH server did not provide a usable host key\n");
+        return false;
+    }
+    const std::string key_material = hex_encode(reinterpret_cast<const unsigned char *>(key), key_length);
+    const std::string key_fingerprint = "SHA256:" + hex_encode(reinterpret_cast<const unsigned char *>(fingerprint), 32);
+    const std::string host_name = host != nullptr ? host : "";
+    const std::string key_type_name = host_key_type_name(key_type);
+    bool found = false;
+    bool matches = false;
+    {
+        ScopedSDMount mount_guard = {};
+        std::string existing;
+        if (mount_guard.ok()) read_file_contents(kKnownHostsPath, &existing);
+        std::istringstream lines(existing);
+        std::string line;
+        while (std::getline(lines, line)) {
+            std::istringstream fields(line);
+            std::string known_host, known_port, known_type, known_key;
+            if (!(fields >> known_host >> known_port >> known_type >> known_key)) continue;
+            if (known_host == host_name && known_port == std::to_string(port)) {
+                found = true;
+                matches = known_type == key_type_name && known_key == key_material;
+                break;
+            }
+        }
+    }
+    if (found && matches) return true;
+    char notice[192];
+    std::snprintf(notice, sizeof(notice), "hostkey: %s:%d %s %s\n", host_name.c_str(), port,
+                  found ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
+    append_text(notice);
+    if (found) {
+        append_text("ERROR: changed host key rejected. Review it, then use 'hostkey replace'.\n");
+    } else if (lowercase_ascii(strict_host_key_checking) == "yes") {
+        append_text("ERROR: StrictHostKeyChecking=yes rejects unknown host keys.\n");
+    } else {
+        pending_host_key_host = host_name;
+        pending_host_key_port = port;
+        pending_host_key_type = key_type_name;
+        pending_host_key_material = key_material;
+        pending_host_key_fingerprint = key_fingerprint;
+        append_text("Use 'hostkey accept' to save this key, then reconnect; 'hostkey reject' discards it.\n");
+    }
+    return false;
+}
+
+esp_err_t SSHTerminal::connect(const char* host, int port, const char* username, const char* password,
+                               const std::string &strict_host_key_checking)
 {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "WiFi not connected");
@@ -4780,6 +4932,11 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     ESP_LOGI(TAG, "SSH handshake successful");
     append_text("SSH handshake successful\n");
 
+    if (!verify_host_key(host, port, strict_host_key_checking)) {
+        disconnect();
+        return ESP_FAIL;
+    }
+
     if (ssh_authenticate(username, password) != ESP_OK) {
         append_text("ERROR: Authentication failed\n");
         disconnect();
@@ -4818,7 +4975,8 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     return ESP_OK;
 }
 
-esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len)
+esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data,
+                                        size_t privkey_len, const std::string &strict_host_key_checking)
 {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "WiFi not connected");
@@ -4933,6 +5091,11 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
 
     ESP_LOGW(TAG, "ssh key connect: handshake successful");
     append_text("SSH handshake successful\n");
+
+    if (!verify_host_key(host, port, strict_host_key_checking)) {
+        disconnect();
+        return ESP_FAIL;
+    }
 
     ESP_LOGW(TAG, "ssh key connect: pubkey auth start user=%s", username ? username : "<null>");
     if (ssh_authenticate_pubkey(username, privkey_data, privkey_len) != ESP_OK) {
