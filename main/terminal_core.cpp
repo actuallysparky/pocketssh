@@ -397,7 +397,11 @@ void TerminalCore::feed(const char *bytes, size_t length)
         if (parser_state_ == ParserState::Csi) {
             if (byte >= 0x40 && byte <= 0x7E) { execute_csi(static_cast<char>(byte)); parser_state_ = ParserState::Ground; }
             else if (csi_buffer_.size() < kMaxControlSequence) csi_buffer_.push_back(static_cast<char>(byte));
-            else parser_state_ = ParserState::Ground;
+            else parser_state_ = ParserState::CsiDiscard;
+            continue;
+        }
+        if (parser_state_ == ParserState::CsiDiscard) {
+            if (byte >= 0x40 && byte <= 0x7E) parser_state_ = ParserState::Ground;
             continue;
         }
         if (byte == 0x1B) { parser_state_ = ParserState::Escape; continue; }

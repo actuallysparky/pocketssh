@@ -66,7 +66,7 @@ public:
     std::string encode_key(const KeyEvent &event) const;
 
 private:
-    enum class ParserState : uint8_t { Ground, Escape, Csi, Osc, OscEscape, Utf8 };
+    enum class ParserState : uint8_t { Ground, Escape, Csi, CsiDiscard, Osc, OscEscape, Utf8 };
 
     size_t columns_;
     size_t rows_;

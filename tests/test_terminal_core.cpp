@@ -63,6 +63,20 @@ void test_form_feed_clears_and_homes()
     assert(term.row(0)[1].codepoint == ' ');
 }
 
+void test_ignored_control_sequences_are_bounded()
+{
+    TerminalCore term(8, 2, 2);
+    feed_bytewise(term, "A\x1b]0;remote-title\x07" "B");
+    assert(term.row(0)[0].codepoint == 'A');
+    assert(term.row(0)[1].codepoint == 'B');
+    std::string oversized = "C\x1b[";
+    oversized.append(160, '1');
+    oversized += "mD";
+    term.feed(oversized.data(), oversized.size());
+    assert(term.row(0)[2].codepoint == 'C');
+    assert(term.row(0)[3].codepoint == 'D');
+}
+
 void test_scroll_and_key_encoding()
 {
     TerminalCore term(4, 2, 4);
@@ -149,6 +163,7 @@ int main()
     test_utf8_replacement_and_viewport_copy();
     test_erase_insert_and_resize();
     test_form_feed_clears_and_homes();
+    test_ignored_control_sequences_are_bounded();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }
