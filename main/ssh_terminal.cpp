@@ -1665,10 +1665,12 @@ bool network_receive_to_sd_file(SSHTerminal *terminal, const std::string &url,
 {
     if (terminal == nullptr || !valid_local_http_url(url) || !valid_serial_target_name(target_name) ||
         expected_size == 0) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed reason=arguments");
         return false;
     }
     ScopedSDMount mount_guard = {};
     if (!mount_guard.ok()) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed reason=mount");
         terminal->append_text("netrx: SD mount failed\n");
         return false;
     }
@@ -1677,7 +1679,10 @@ bool network_receive_to_sd_file(SSHTerminal *terminal, const std::string &url,
 #else
     const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" : (path_exists_dir("/sd") ? "/sd" : nullptr);
 #endif
-    if (root_dir == nullptr) return false;
+    if (root_dir == nullptr) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed reason=no-root");
+        return false;
+    }
 
     const std::string target_path = std::string(root_dir) + "/" + target_name;
     const std::string partial_path = target_path + ".partial";
@@ -1691,11 +1696,14 @@ bool network_receive_to_sd_file(SSHTerminal *terminal, const std::string &url,
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr || esp_http_client_open(client, 0) != ESP_OK) {
         if (client != nullptr) esp_http_client_cleanup(client);
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed reason=http-open");
         terminal->append_text("netrx: HTTP open failed\n");
         return false;
     }
     const int64_t content_length = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
+    ESP_LOGW(TAG, "POCKETCTL netrx_http status=%d length=%lld expected=%u", status,
+             static_cast<long long>(content_length), static_cast<unsigned>(expected_size));
     if (status != 200 || content_length != static_cast<int64_t>(expected_size)) {
         ESP_LOGW(TAG, "POCKETCTL netrx_failed status=%d length=%lld expected=%u", status,
                  static_cast<long long>(content_length), static_cast<unsigned>(expected_size));
@@ -1707,6 +1715,7 @@ bool network_receive_to_sd_file(SSHTerminal *terminal, const std::string &url,
 
     FILE *out = std::fopen(partial_path.c_str(), "wb");
     if (out == nullptr) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed reason=open-partial");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         terminal->append_text("netrx: cannot create partial\n");
