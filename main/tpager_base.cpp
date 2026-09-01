@@ -86,6 +86,9 @@ int32_t g_keyboard_releases = 0;
 int32_t g_encoder_net = 0;
 int32_t g_encoder_transitions = 0;
 bool g_shutdown_requested = false;
+// -1 = terminal screen could not be created, 0 = handoff pending, 1 = active.
+// Kept intentionally simple because it is read by a diagnostic task only.
+volatile int g_terminal_ui_state = 0;
 bool g_alt_held = false;
 bool g_caps_held = false;
 bool g_encoder_center_held = false;
@@ -570,6 +573,22 @@ void runtime_task(void *)
     }
 }
 
+void runtime_health_task(void *)
+{
+    // The USB Serial/JTAG console is the only non-visual observation channel
+    // available on a connected Pager.  A small periodic record makes a
+    // post-flash capture useful without adding any network listener or
+    // retaining user/session data.
+    while (true) {
+        const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        ESP_LOGI(kTag, "PAGER_HEALTH ui=%d psram=%u/%uK", g_terminal_ui_state,
+                 static_cast<unsigned>(psram_free / 1024),
+                 static_cast<unsigned>(psram_total / 1024));
+        vTaskDelay(ticks_from_ms(5000));
+    }
+}
+
 bool initialize_terminal_ui_with_retry()
 {
     // The diagnostic frame deliberately starts LVGL before the full terminal.
@@ -581,6 +600,7 @@ bool initialize_terminal_ui_with_retry()
     // cannot starve an interactive path.
     if (!lvgl_port_lock(0)) {
         ESP_LOGE(kTag, "Failed to acquire LVGL lock for terminal UI");
+        g_terminal_ui_state = -1;
         tpager::diag_display_set_stage(&g_display, "Stage: terminal UI unavailable");
         return false;
     }
@@ -603,11 +623,13 @@ bool initialize_terminal_ui_with_retry()
                       static_cast<unsigned>(psram_free / 1024));
         g_terminal->append_text(psram_status);
         lvgl_port_unlock();
+        g_terminal_ui_state = 1;
         return true;
     }
 
     lvgl_port_unlock();
     ESP_LOGE(kTag, "Failed to create terminal UI");
+    g_terminal_ui_state = -1;
     tpager::diag_display_set_stage(&g_display, "Stage: terminal UI unavailable");
     return false;
 }
@@ -835,6 +857,12 @@ extern "C" void app_main(void)
 
     tpager::diag_display_set_stage(&g_display, keyboard_ok ? "Stage: keyboard ready" : "Stage: keyboard degraded");
     ESP_LOGI(kTag, "keyboard init: %s", keyboard_ok ? "PASS" : "DEGRADED");
+
+    BaseType_t health_ok =
+        xTaskCreatePinnedToCore(runtime_health_task, "tpager_health", 3072, nullptr, 2, nullptr, 0);
+    if (health_ok != pdPASS) {
+        ESP_LOGW(kTag, "Failed to start health task");
+    }
 
     // Bring up the user-facing terminal before the optional dial. The initial
     // LVGL handoff is user-visible and must not be delayed by a peripheral
