@@ -4284,7 +4284,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_sd_probe(this);
             }
             else if (current_input.rfind("sdverify", 0) == 0) {
-                const std::vector<std::string> args = split_quoted_arguments(current_input, 2);
+                const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
                 const std::string target_name = args.empty() ? "" : args[0];
                 if (!verify_sd_artifact(this, target_name)) {
                     append_text("sdverify: failed\n");
