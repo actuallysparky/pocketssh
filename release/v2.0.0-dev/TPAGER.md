@@ -26,6 +26,12 @@ Build the target with an isolated ESP-IDF build directory:
 idf.py -B /path/to/build/tpager-2.0 -DTPAGER_TARGET=ON -DTPAGER_DIAG=OFF build
 ```
 
+The T-Pager profile uses 8 MiB QSPI PSRAM. ESP-IDF calls that electrical bus
+mode `QUAD`; its generated `sdkconfig` must show `CONFIG_SPIRAM_MODE_QUAD=y`
+and `CONFIG_SPIRAM_TYPE_ESPPSRAM64=y`. The T-Deck Plus profile is kept
+separate and continues to select octal PSRAM. Do not reuse a build directory
+between the targets.
+
 Package the resulting app with `misc/package_tpager_bin.sh`. The established
 T-Pager package and SD-sidecar filename remains `PocketSSH-TPager.bin`.
 

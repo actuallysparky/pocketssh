@@ -3716,11 +3716,12 @@ SSHTerminal::SSHTerminal()
       terminal_selection_end_row(0),
       terminal_selection_end_col(0)
 {
-#if defined(TDECKPLUS_TARGET)
+#if CONFIG_SPIRAM
     // Generic malloc keeps sub-4 KiB allocations internal on this ESP-IDF
     // configuration.  A complete 512-row history is made of many such rows,
     // so reserve one explicit PSRAM slab instead of exhausting internal RAM
-    // gradually during an active SSH session.
+    // gradually during an active SSH session.  Both the T-Deck Plus and the
+    // T-LoRa Pager have PSRAM, but use different electrical bus modes.
     constexpr size_t kScrollbackStorageColumns = 80;
     for (const size_t capacity : {size_t{512}, size_t{128}, size_t{64}}) {
         const size_t bytes = capacity * kScrollbackStorageColumns * sizeof(pocketssh::TerminalCell);
@@ -3733,9 +3734,9 @@ SSHTerminal::SSHTerminal()
         }
     }
 #endif
-    ESP_LOGW(TAG, "terminal scrollback: %u rows (%s)",
+    ESP_LOGI(TAG, "terminal scrollback: %u rows (%s)",
              static_cast<unsigned>(terminal_core.scrollback_limit()),
-             terminal_core.scrollback_limit() == 512 ? "PSRAM default" : "PSRAM fallback");
+             terminal_scrollback_storage != nullptr ? "PSRAM" : "internal-RAM fallback");
     vTaskDelay(pdMS_TO_TICKS(100));
     load_theme_color_from_nvs();
     
