@@ -211,6 +211,7 @@ private:
     static void special_key_event_cb(lv_event_t* e);
     static void input_touch_event_cb(lv_event_t* e);
     static void output_touch_event_cb(lv_event_t* e);
+    static void terminal_grid_draw_event_cb(lv_event_t* e);
     static void restore_output_scroll_async(void *user_data);
     static void cursor_blink_cb(lv_timer_t* timer);
     static void battery_update_cb(lv_timer_t* timer);

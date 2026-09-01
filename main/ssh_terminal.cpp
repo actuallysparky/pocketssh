@@ -308,35 +308,12 @@ uint32_t terminal_cell_foreground(const pocketssh::TerminalCell &cell, uint32_t 
     return foreground;
 }
 
-std::string terminal_recolor_text(const pocketssh::TerminalCore &core, uint32_t theme)
+uint32_t terminal_cell_background(const pocketssh::TerminalCell &cell, uint32_t theme)
 {
-    std::string output;
-    output.reserve(core.rows() * (core.columns() + 12));
-    for (size_t row = 0; row < core.rows(); ++row) {
-        const auto &cells = core.row(row);
-        size_t start = 0;
-        while (start < cells.size()) {
-            const uint32_t color = terminal_cell_foreground(cells[start], theme);
-            size_t end = start + 1;
-            while (end < cells.size() && terminal_cell_foreground(cells[end], theme) == color) ++end;
-            char prefix[10] = {};
-            std::snprintf(prefix, sizeof(prefix), "#%06x ", static_cast<unsigned>(color));
-            output += prefix;
-            for (size_t index = start; index < end; ++index) {
-                const std::string glyph = terminal_cell_utf8(cells[index].codepoint);
-                // LVGL's recolor syntax uses '#'; doubling preserves literal
-                // shell prompts and file names containing that character.
-                for (char ch : glyph) {
-                    if (ch == '#') output += "##";
-                    else output += ch;
-                }
-            }
-            output += '#';
-            start = end;
-        }
-        if (row + 1 < core.rows()) output += '\n';
-    }
-    return output;
+    uint32_t foreground = xterm_palette_rgb(cell.foreground, theme);
+    uint32_t background = xterm_palette_rgb(cell.background, kTerminalBackground);
+    if (cell.style & pocketssh::CellStyleInverse) std::swap(foreground, background);
+    return background;
 }
 
 // Scrollback contract: retain at least ~3 full terminal screens on-device even
@@ -3873,6 +3850,9 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_LONG_PRESSED, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(terminal_grid, output_touch_event_cb, LV_EVENT_RELEASED, this);
+    // Draw terminal cells directly into one LVGL surface.  This avoids the
+    // dynamic child-label tree that previously went blank after SSH handoff.
+    lv_obj_add_event_cb(terminal_grid, terminal_grid_draw_event_cb, LV_EVENT_DRAW_MAIN, this);
     lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t* input_container = lv_obj_create(terminal_screen);
@@ -4573,6 +4553,66 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
     if (code == LV_EVENT_SCROLL_END || code == LV_EVENT_RELEASED) {
         terminal->terminal_output_touch_scroll_y = lv_obj_get_scroll_y(target);
         (void)lv_async_call(restore_output_scroll_async, terminal);
+    }
+}
+
+void SSHTerminal::terminal_grid_draw_event_cb(lv_event_t* e)
+{
+    SSHTerminal *terminal = static_cast<SSHTerminal *>(lv_event_get_user_data(e));
+    lv_obj_t *grid = static_cast<lv_obj_t *>(lv_event_get_current_target(e));
+    if (terminal == nullptr || grid == nullptr || !terminal->ssh_connected) return;
+
+    lv_layer_t *layer = lv_event_get_layer(e);
+    if (layer == nullptr) return;
+
+    lv_area_t content = {};
+    lv_obj_get_content_coords(grid, &content);
+    const lv_font_t *font = terminal->terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
+    const int cell_width = terminal_cell_width(font, terminal->terminal_font_big);
+    const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
+
+    lv_draw_rect_dsc_t row_dsc;
+    lv_draw_rect_dsc_init(&row_dsc);
+    row_dsc.bg_opa = LV_OPA_COVER;
+    row_dsc.bg_color = lv_color_hex(kTerminalBackground);
+
+    for (size_t row = 0; row < terminal->terminal_core.rows(); ++row) {
+        lv_area_t row_area = {content.x1, static_cast<lv_coord_t>(content.y1 + row * cell_height),
+                              content.x2, static_cast<lv_coord_t>(content.y1 + (row + 1) * cell_height - 1)};
+        if (row_area.y1 > content.y2) break;
+        row_area.y2 = std::min(row_area.y2, content.y2);
+        lv_draw_rect(layer, &row_dsc, &row_area);
+
+        const auto &cells = terminal->terminal_core.row(row);
+        for (size_t col = 0; col < cells.size(); ++col) {
+            const auto &cell = cells[col];
+            lv_area_t cell_area = {static_cast<lv_coord_t>(content.x1 + col * cell_width), row_area.y1,
+                                   static_cast<lv_coord_t>(content.x1 + (col + 1) * cell_width - 1), row_area.y2};
+            if (cell_area.x1 > content.x2) break;
+            cell_area.x2 = std::min(cell_area.x2, content.x2);
+
+            const uint32_t background = terminal_cell_background(cell, terminal->theme_color_hex);
+            if (background != kTerminalBackground) {
+                lv_draw_rect_dsc_t cell_dsc;
+                lv_draw_rect_dsc_init(&cell_dsc);
+                cell_dsc.bg_opa = LV_OPA_COVER;
+                cell_dsc.bg_color = lv_color_hex(background);
+                lv_draw_rect(layer, &cell_dsc, &cell_area);
+            }
+            if (cell.codepoint == ' ') continue;
+
+            const std::string glyph = terminal_cell_utf8(cell.codepoint);
+            lv_draw_label_dsc_t label_dsc;
+            lv_draw_label_dsc_init(&label_dsc);
+            label_dsc.text = glyph.c_str();
+            label_dsc.text_local = 1;
+            label_dsc.font = font;
+            label_dsc.color = lv_color_hex(terminal_cell_foreground(cell, terminal->theme_color_hex));
+            label_dsc.opa = (cell.style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER;
+            if (cell.style & pocketssh::CellStyleUnderline) label_dsc.decor = LV_TEXT_DECOR_UNDERLINE;
+            if (cell.style & pocketssh::CellStyleStrike) label_dsc.decor = static_cast<lv_text_decor_t>(label_dsc.decor | LV_TEXT_DECOR_STRIKETHROUGH);
+            lv_draw_label(layer, &label_dsc, &cell_area);
+        }
     }
 }
 
@@ -6183,9 +6223,7 @@ void SSHTerminal::sync_terminal_geometry(bool notify_remote)
     // Derive the advertised terminal size from the actual display content area
     // and fixed-cell font metrics; never advertise stale hard-coded geometry.
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-    // The T-Deck Plus fallback presents an active SSH session through the
-    // full-height textarea, so advertise that actual visible geometry.
-    const lv_obj_t *surface = ssh_connected || terminal_grid == nullptr ? terminal_output : terminal_grid;
+    const lv_obj_t *surface = ssh_connected && terminal_grid != nullptr ? terminal_grid : terminal_output;
     const int cell_width = terminal_cell_width(font, terminal_font_big);
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
     const int content_width = surface ? lv_obj_get_content_width(surface) : cell_width * (terminal_font_big ? 53 : 67);
@@ -6331,41 +6369,39 @@ void SSHTerminal::update_terminal_display()
     if (terminal_output == nullptr || !ssh_connected) {
         return;
     }
-
-    // The T-Deck Plus' current LVGL composition path does not reliably paint
-    // a large dynamic tree of fixed-cell child labels after an SSH handoff.
-    // Keep the terminal core as the source of truth, but present its visible
-    // viewport through the established textarea until the styled grid has its
-    // own device-validated renderer.  This makes remote prompt/output and
-    // physical-keyboard echo reliable instead of leaving a blank surface.
-    if (terminal_grid != nullptr) {
-        lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+    if (terminal_grid == nullptr) return;
+    lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+    lv_area_t content = {};
+    lv_obj_get_content_coords(terminal_grid, &content);
+    const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
+    const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
+    for (size_t row = 0; row < terminal_core.rows(); ++row) {
+        if (!terminal_core.row_dirty(row)) continue;
+        lv_area_t dirty = {content.x1, static_cast<lv_coord_t>(content.y1 + row * cell_height),
+                           content.x2, static_cast<lv_coord_t>(content.y1 + (row + 1) * cell_height - 1)};
+        if (dirty.y1 <= content.y2) {
+            dirty.y2 = std::min(dirty.y2, content.y2);
+            lv_obj_invalidate_area(terminal_grid, &dirty);
+        }
     }
-    lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
-    const std::string text = terminal_recolor_text(terminal_core, theme_color_hex);
-    lv_textarea_set_text(terminal_output, text.c_str());
     terminal_core.clear_dirty();
 }
 
 void SSHTerminal::show_ssh_terminal_view()
 {
-    // Use the established textarea as the reliable device presentation path
-    // while the terminal core owns parsing, cursor motion, and scrollback.
     if (!display_lock(200)) {
         ESP_LOGW(TAG, "SSH terminal view: display lock timeout");
         return;
     }
     set_ssh_terminal_layout(true);
-    if (terminal_output != nullptr) {
-        lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
-        const std::string initial_text = terminal_core.plain_text();
-        lv_textarea_set_text(terminal_output, initial_text.c_str());
-    }
+    if (terminal_output != nullptr) lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
     if (terminal_grid != nullptr) {
-        lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(terminal_grid);
     }
-    ESP_LOGW(TAG, "SSH terminal view active textarea=%p rows=%u cols=%u",
-             static_cast<void *>(terminal_output),
+    ESP_LOGW(TAG, "SSH terminal view active canvas=%p rows=%u cols=%u",
+             static_cast<void *>(terminal_grid),
              static_cast<unsigned>(terminal_core.rows()),
              static_cast<unsigned>(terminal_core.columns()));
     display_unlock();
@@ -6386,6 +6422,12 @@ void SSHTerminal::set_ssh_terminal_layout(bool active)
         lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
         lv_obj_set_style_border_width(terminal_output, 0, 0);
         lv_obj_set_style_pad_all(terminal_output, 0, 0);
+        if (terminal_grid != nullptr) {
+            lv_obj_set_size(terminal_grid, lv_pct(100), height);
+            lv_obj_align(terminal_grid, LV_ALIGN_TOP_MID, 0, 25);
+            lv_obj_set_style_border_width(terminal_grid, 0, 0);
+            lv_obj_set_style_pad_all(terminal_grid, 0, 0);
+        }
         return;
     }
 
@@ -6396,29 +6438,17 @@ void SSHTerminal::set_ssh_terminal_layout(bool active)
     lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
     lv_obj_set_style_border_width(terminal_output, 2, 0);
     lv_obj_set_style_pad_all(terminal_output, 1, 0);
+    if (terminal_grid != nullptr) lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
 }
 
 void SSHTerminal::rebuild_terminal_grid()
 {
     if (terminal_grid == nullptr) return;
+    // The fixed-cell canvas owns no child labels.  Geometry changes only
+    // require invalidating the canvas; terminal content remains in the core.
     lv_obj_clean(terminal_grid);
     terminal_grid_rows.clear();
-
-    const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-    const int line_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
-    const int width = std::max(1, static_cast<int>(lv_obj_get_content_width(terminal_grid)));
-    terminal_grid_rows.reserve(terminal_core.rows());
-    for (size_t row = 0; row < terminal_core.rows(); ++row) {
-        lv_obj_t *line = lv_obj_create(terminal_grid);
-        lv_obj_set_size(line, width, line_height);
-        lv_obj_set_pos(line, 0, static_cast<int32_t>(row * line_height));
-        lv_obj_set_style_bg_opa(line, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(line, 0, 0);
-        lv_obj_set_style_pad_all(line, 0, 0);
-        lv_obj_set_style_text_font(line, font, 0);
-        lv_obj_set_scrollbar_mode(line, LV_SCROLLBAR_MODE_OFF);
-        terminal_grid_rows.push_back(line);
-    }
+    lv_obj_invalidate(terminal_grid);
 }
 
 void SSHTerminal::render_terminal_grid_row(size_t row_index)
