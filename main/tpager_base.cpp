@@ -421,11 +421,27 @@ void poll_encoder()
     g_encoder_transitions += ev.transitions;
     if (ev.moved) {
         g_encoder_net += ev.delta;
-        if (g_terminal != nullptr && lvgl_port_lock(25)) {
+        if (g_terminal != nullptr && g_tca8418_state.symbol) {
+            // The orange Symbols key normally remains a momentary keyboard
+            // chord.  While it is held, the dial substitutes for the
+            // T-Deck's horizontal gestures: counter-clockwise is the
+            // left-swipe control sheet and clockwise is the right-swipe SSH
+            // server picker.  Repeated detents keep the chosen sheet open.
+            if (ev.delta < 0) {
+                g_terminal->show_special_keys_panel();
+            } else if (ev.delta > 0) {
+                g_terminal->show_server_picker();
+            }
+        } else if (g_terminal != nullptr && g_terminal->cycle_active_overlay(ev.delta)) {
+            // Once a sheet is open, the unmodified dial selects a button and
+            // the center button activates it.  This provides the touch-panel
+            // interaction model on the physical-keyboard-only T-Pager.
+        } else if (g_terminal != nullptr && lvgl_port_lock(25)) {
             int32_t steps = ev.delta;
 
             // Encoder interaction contract:
             // - default      : command history
+            // - Orange Symbols + encoder: terminal sheets (handled above)
             // - ALT + encoder: cursor left/right on input line
             // - CAPS + encoder: terminal output scroll up/down
             // CAPS mode has priority if both modifiers are held.
@@ -457,6 +473,15 @@ void poll_encoder()
     }
     if (ev.button_changed) {
         if (ev.button_pressed) {
+            // A sheet action consumes the center press.  Do not also submit
+            // a newline or arm the long-press shutdown gesture.
+            if (g_terminal != nullptr && g_terminal->activate_active_overlay()) {
+                g_encoder_center_held = false;
+                g_encoder_center_hold_fired = false;
+                g_encoder_center_press_tick = 0;
+                tpager::diag_display_set_encoder_stats(&g_display, g_encoder_net, g_encoder_transitions);
+                return;
+            }
             g_encoder_center_held = true;
             g_encoder_center_hold_fired = false;
             g_encoder_center_press_tick = xTaskGetTickCount();

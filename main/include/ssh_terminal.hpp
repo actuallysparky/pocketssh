@@ -56,6 +56,13 @@ public:
     void move_cursor_end();
     void scroll_terminal_output(int steps);
     void toggle_special_keys_panel();
+    // Physical targets use these explicit actions rather than touch gestures.
+    // They only show the requested sheet; they never hide it on a repeated
+    // encoder detent.
+    void show_special_keys_panel();
+    void show_server_picker();
+    bool cycle_active_overlay(int steps);
+    bool activate_active_overlay();
     void remember_reconnect_alias(const std::string &alias);
     void reconnect_last_session();
     
@@ -94,9 +101,11 @@ private:
     // needlessly risky during startup.
     std::vector<lv_obj_t*> side_panel_buttons;
     uint8_t side_panel_page;
+    uint8_t side_panel_selected;
     std::vector<lv_obj_t*> server_panel_buttons;
     std::vector<std::string> server_panel_actions;
     uint8_t server_panel_page;
+    uint8_t server_panel_selected;
     
     std::string current_input;
     size_t cursor_pos;
@@ -212,9 +221,11 @@ private:
     void send_special_key(const char* sequence);
     void create_side_panel();
     void populate_side_panel_page();
+    void update_side_panel_selection();
     void toggle_side_panel();
     void create_server_panel();
     void populate_server_panel();
+    void update_server_panel_selection();
     void toggle_server_panel();
     void connect_server_panel_alias(const char* alias);
     static void gesture_event_cb(lv_event_t* e);

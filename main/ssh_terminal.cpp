@@ -3663,7 +3663,9 @@ SSHTerminal::SSHTerminal()
       server_panel(NULL),
       terminal_notice(NULL),
       side_panel_page(0),
+      side_panel_selected(0),
       server_panel_page(0),
+      server_panel_selected(0),
       cursor_pos(0),
       bytes_received(0),
       history_index(-1),
@@ -6575,9 +6577,11 @@ void SSHTerminal::apply_theme_colors()
     }
     if (side_panel) {
         lv_obj_set_style_border_color(side_panel, theme, 0);
+        update_side_panel_selection();
     }
     if (server_panel) {
         lv_obj_set_style_border_color(server_panel, theme, 0);
+        update_server_panel_selection();
     }
 }
 
@@ -6888,13 +6892,24 @@ void SSHTerminal::create_side_panel()
     lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
     lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
 
-    auto create_key_button = [this](const char* label, const char* key_seq, int column, int row) {
+    // The T-Deck is 320px wide while the T-Pager is 480px wide.  Derive the
+    // button geometry from the screen so the same six-button sheet remains
+    // touchable/readable on both targets instead of leaving a dead right third
+    // on the T-Pager.
+    constexpr int kPanelMargin = 5;
+    constexpr int kPanelGap = 6;
+    const int panel_width = lv_obj_get_width(terminal_screen);
+    const int button_width = std::max(1, (panel_width - (kPanelMargin * 2) - (kPanelGap * 2)) / 3);
+
+    auto create_key_button = [this, button_width](const char* label, const char* key_seq, int column, int row) {
         lv_obj_t* btn = lv_btn_create(side_panel);
-        lv_obj_set_size(btn, 98, 24);
-        lv_obj_set_pos(btn, 5 + column * 106, 3 + row * 28);
+        lv_obj_set_size(btn, button_width, 24);
+        lv_obj_set_pos(btn, kPanelMargin + column * (button_width + kPanelGap), 3 + row * 28);
         lv_obj_set_style_radius(btn, 2, 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A1A), 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(theme_color_hex), LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(btn, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(btn, lv_color_hex(theme_color_hex), LV_STATE_FOCUSED);
         
         lv_obj_t* btn_label = lv_label_create(btn);
         lv_label_set_text(btn_label, label);
@@ -6935,6 +6950,7 @@ void SSHTerminal::populate_side_panel_page()
     };
     constexpr size_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
     side_panel_page %= kPageCount;
+    side_panel_selected = 0;
     for (size_t index = 0; index < side_panel_buttons.size() && index < 6; ++index) {
         lv_obj_t *button = side_panel_buttons[index];
         const OverlayKey &key = kPages[side_panel_page][index];
@@ -6943,6 +6959,21 @@ void SSHTerminal::populate_side_panel_page()
         lv_obj_set_user_data(button, const_cast<char *>(key.sequence));
         if (key.label[0] == '\0') lv_obj_add_flag(button, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_clear_flag(button, LV_OBJ_FLAG_HIDDEN);
+    }
+    update_side_panel_selection();
+}
+
+void SSHTerminal::update_side_panel_selection()
+{
+    if (side_panel_buttons.empty()) return;
+    side_panel_selected %= static_cast<uint8_t>(side_panel_buttons.size());
+    for (size_t index = 0; index < side_panel_buttons.size(); ++index) {
+        lv_obj_t *button = side_panel_buttons[index];
+        if (index == side_panel_selected && !lv_obj_has_flag(button, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_state(button, LV_STATE_FOCUSED);
+        } else {
+            lv_obj_clear_state(button, LV_STATE_FOCUSED);
+        }
     }
 }
 
@@ -6956,6 +6987,7 @@ void SSHTerminal::toggle_side_panel()
         // permanently invisible.
         lv_obj_clear_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+        update_side_panel_selection();
     } else {
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
@@ -6976,14 +7008,21 @@ void SSHTerminal::create_server_panel()
     lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
     lv_obj_add_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
 
+    constexpr int kPanelMargin = 5;
+    constexpr int kPanelGap = 6;
+    const int panel_width = lv_obj_get_width(terminal_screen);
+    const int button_width = std::max(1, (panel_width - (kPanelMargin * 2) - (kPanelGap * 2)) / 3);
+
     server_panel_actions.assign(6, "");
     for (int index = 0; index < 6; ++index) {
         lv_obj_t* button = lv_btn_create(server_panel);
-        lv_obj_set_size(button, 98, 24);
-        lv_obj_set_pos(button, 5 + (index % 3) * 106, 3 + (index / 3) * 28);
+        lv_obj_set_size(button, button_width, 24);
+        lv_obj_set_pos(button, kPanelMargin + (index % 3) * (button_width + kPanelGap), 3 + (index / 3) * 28);
         lv_obj_set_style_radius(button, 2, 0);
         lv_obj_set_style_bg_color(button, lv_color_hex(0x1A1A1A), 0);
         lv_obj_set_style_bg_color(button, lv_color_hex(theme_color_hex), LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(button, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(button, lv_color_hex(theme_color_hex), LV_STATE_FOCUSED);
         lv_obj_t* label = lv_label_create(button);
         lv_obj_set_style_text_color(label, lv_color_hex(theme_color_hex), 0);
         lv_obj_set_style_text_font(label, ui_font_small(), 0);
@@ -7002,6 +7041,7 @@ void SSHTerminal::populate_server_panel()
     constexpr size_t kAliasesPerPage = 5;
     const size_t page_count = std::max<size_t>(1, (aliases.size() + kAliasesPerPage - 1) / kAliasesPerPage);
     server_panel_page %= page_count;
+    server_panel_selected = 0;
     const size_t first = static_cast<size_t>(server_panel_page) * kAliasesPerPage;
 
     for (size_t index = 0; index < server_panel_buttons.size() && index < 6; ++index) {
@@ -7032,6 +7072,21 @@ void SSHTerminal::populate_server_panel()
         if (enabled) lv_obj_clear_state(button, LV_STATE_DISABLED);
         else lv_obj_add_state(button, LV_STATE_DISABLED);
     }
+    update_server_panel_selection();
+}
+
+void SSHTerminal::update_server_panel_selection()
+{
+    if (server_panel_buttons.empty()) return;
+    server_panel_selected %= static_cast<uint8_t>(server_panel_buttons.size());
+    for (size_t index = 0; index < server_panel_buttons.size(); ++index) {
+        lv_obj_t *button = server_panel_buttons[index];
+        if (index == server_panel_selected && !lv_obj_has_state(button, LV_STATE_DISABLED)) {
+            lv_obj_add_state(button, LV_STATE_FOCUSED);
+        } else {
+            lv_obj_clear_state(button, LV_STATE_FOCUSED);
+        }
+    }
 }
 
 void SSHTerminal::toggle_server_panel()
@@ -7041,6 +7096,7 @@ void SSHTerminal::toggle_server_panel()
         populate_server_panel();
         lv_obj_clear_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+        update_server_panel_selection();
     } else {
         lv_obj_add_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
@@ -7086,6 +7142,109 @@ void SSHTerminal::toggle_special_keys_panel()
     }
     toggle_side_panel();
     display_unlock();
+}
+
+void SSHTerminal::show_special_keys_panel()
+{
+    if (!display_lock(200)) {
+        ESP_LOGW(TAG, "show_special_keys_panel skipped: display lock timeout");
+        return;
+    }
+    if (server_panel && !lv_obj_has_flag(server_panel, LV_OBJ_FLAG_HIDDEN)) {
+        toggle_server_panel();
+    }
+    if (side_panel && lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN)) {
+        toggle_side_panel();
+    }
+    side_panel_selected = 0;
+    update_side_panel_selection();
+    display_unlock();
+}
+
+void SSHTerminal::show_server_picker()
+{
+    if (!display_lock(200)) {
+        ESP_LOGW(TAG, "show_server_picker skipped: display lock timeout");
+        return;
+    }
+    if (side_panel && !lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN)) {
+        toggle_side_panel();
+    }
+    if (server_panel && lv_obj_has_flag(server_panel, LV_OBJ_FLAG_HIDDEN)) {
+        toggle_server_panel();
+    }
+    server_panel_selected = 0;
+    update_server_panel_selection();
+    display_unlock();
+}
+
+bool SSHTerminal::cycle_active_overlay(int steps)
+{
+    if (steps == 0 || !display_lock(200)) return false;
+
+    const bool controls_visible = side_panel && !lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
+    const bool servers_visible = server_panel && !lv_obj_has_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
+    if (!controls_visible && !servers_visible) {
+        display_unlock();
+        return false;
+    }
+
+    const int direction = steps > 0 ? 1 : -1;
+    int remaining = std::abs(steps);
+    if (controls_visible && !side_panel_buttons.empty()) {
+        const int count = static_cast<int>(side_panel_buttons.size());
+        while (remaining-- > 0) {
+            side_panel_selected = static_cast<uint8_t>((static_cast<int>(side_panel_selected) + direction + count) % count);
+        }
+        update_side_panel_selection();
+    } else if (servers_visible && !server_panel_buttons.empty()) {
+        const int count = static_cast<int>(server_panel_buttons.size());
+        bool found = false;
+        while (remaining-- > 0) {
+            for (int attempt = 0; attempt < count; ++attempt) {
+                server_panel_selected = static_cast<uint8_t>((static_cast<int>(server_panel_selected) + direction + count) % count);
+                if (!lv_obj_has_state(server_panel_buttons[server_panel_selected], LV_STATE_DISABLED)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (found) update_server_panel_selection();
+    }
+    display_unlock();
+    return true;
+}
+
+bool SSHTerminal::activate_active_overlay()
+{
+    if (!display_lock(200)) return false;
+
+    if (side_panel && !lv_obj_has_flag(side_panel, LV_OBJ_FLAG_HIDDEN) &&
+        side_panel_selected < side_panel_buttons.size()) {
+        const char *action = static_cast<const char *>(lv_obj_get_user_data(side_panel_buttons[side_panel_selected]));
+        if (action != nullptr && action[0] != '\0') {
+            send_special_key(action);
+            display_unlock();
+            return true;
+        }
+    }
+    if (server_panel && !lv_obj_has_flag(server_panel, LV_OBJ_FLAG_HIDDEN) &&
+        server_panel_selected < server_panel_buttons.size() &&
+        !lv_obj_has_state(server_panel_buttons[server_panel_selected], LV_STATE_DISABLED)) {
+        const char *action = static_cast<const char *>(lv_obj_get_user_data(server_panel_buttons[server_panel_selected]));
+        if (action != nullptr && action[0] != '\0') {
+            if (std::strcmp(action, "PAGE") == 0) {
+                ++server_panel_page;
+                populate_server_panel();
+            } else {
+                connect_server_panel_alias(action);
+            }
+            display_unlock();
+            return true;
+        }
+    }
+    display_unlock();
+    return false;
 }
 
 void SSHTerminal::send_special_key(const char* sequence)
