@@ -542,14 +542,9 @@ void poll_encoder()
 void serial_control_task(void *)
 {
     // Host automation contract: allow prefixed commands over USB serial so CI
-    // tooling can trigger "serialrx" without manual keyboard entry.
-    const int stdin_fd = fileno(stdin);
-    if (stdin_fd >= 0) {
-        const int flags = fcntl(stdin_fd, F_GETFL, 0);
-        if (flags >= 0) {
-            (void)fcntl(stdin_fd, F_SETFL, flags | O_NONBLOCK);
-        }
-    }
+    // tooling can trigger "serialrx" without manual keyboard entry.  Read the
+    // native USB JTAG FIFO directly: the generic stdin VFS can be write-only
+    // on the Pager even though the same physical endpoint is usable for logs.
 
     std::string line;
     line.reserve(256);
@@ -561,10 +556,8 @@ void serial_control_task(void *)
             continue;
         }
 
-        ssize_t nread = -1;
-        if (stdin_fd >= 0) {
-            nread = read(stdin_fd, buf, sizeof(buf));
-        }
+        const ssize_t nread = static_cast<ssize_t>(
+            usb_serial_jtag_ll_read_rxfifo(reinterpret_cast<uint8_t *>(buf), sizeof(buf)));
 
         if (nread <= 0) {
             vTaskDelay(ticks_from_ms(20));
