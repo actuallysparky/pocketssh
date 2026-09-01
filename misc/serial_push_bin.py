@@ -208,6 +208,11 @@ def main() -> int:
             print(f"Device reported invalid resume offset: {start_offset}", file=sys.stderr)
             return 3
 
+        # The USB-JTAG CDC endpoint can deliver its ready log before the RX
+        # path is fully switched from serial-control parsing to serialrx.
+        # A small settle avoids losing BEGIN and seeing DATA as the header.
+        time.sleep(0.12)
+
         if args.reset_partial:
             header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
             ser.write(header)
