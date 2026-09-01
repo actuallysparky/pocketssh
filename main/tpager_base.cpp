@@ -31,6 +31,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "nvs_flash.h"
 #include "ssh_terminal.hpp"
 #include "tpager_display.hpp"
@@ -91,6 +92,11 @@ bool g_shutdown_requested = false;
 volatile int g_terminal_ui_state = 0;
 // -1 = keyboard unavailable, 0 = initialization pending, 1 = ready.
 volatile int g_keyboard_state = 0;
+// Boot progress is emitted through the USB peripheral directly so a blocked
+// logging VFS or LVGL task cannot hide the startup boundary during Pager
+// bring-up.  This temporary trace is intentionally numeric and contains no
+// profile, key, or session information.
+volatile int g_boot_stage = 0;
 bool g_keyboard_prerequisites_ready = false;
 bool g_alt_held = false;
 bool g_caps_held = false;
@@ -111,6 +117,27 @@ void IRAM_ATTR keyboard_irq_isr(void *)
     if (high_priority_wakeup == pdTRUE) {
         portYIELD_FROM_ISR();
     }
+}
+
+void emit_usb_boot_trace()
+{
+    char line[48] = {};
+    const int len = std::snprintf(line, sizeof(line), "PAGER_BOOT stage=%d\n", g_boot_stage);
+    if (len <= 0 || !usb_serial_jtag_ll_txfifo_writable()) {
+        return;
+    }
+    const size_t bytes = std::min<size_t>(static_cast<size_t>(len), sizeof(line) - 1);
+    (void)usb_serial_jtag_ll_write_txfifo(reinterpret_cast<const uint8_t *>(line), bytes);
+    usb_serial_jtag_ll_txfifo_flush();
+}
+
+void boot_trace_task(void *)
+{
+    while (g_boot_stage < 100) {
+        emit_usb_boot_trace();
+        vTaskDelay(ticks_from_ms(1000));
+    }
+    vTaskDelete(nullptr);
 }
 
 esp_err_t i2c_init()
@@ -816,9 +843,15 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(kTag, "===== TPAGER TARGET BOOT =====");
+    BaseType_t boot_trace_ok =
+        xTaskCreatePinnedToCore(boot_trace_task, "tpager_boot_trace", 2048, nullptr, 2, nullptr, 0);
+    if (boot_trace_ok != pdPASS) {
+        ESP_LOGW(kTag, "Failed to start raw USB boot trace");
+    }
 
     // Initialize I2C/peripheral controls before display starts using shared SPI.
     // This lets SD mount happen while SPI is otherwise idle.
+    g_boot_stage = 1;
     bool i2c_ready = false;
     ret = i2c_init();
     if (ret != ESP_OK) {
@@ -852,18 +885,21 @@ extern "C" void app_main(void)
     } else {
         ESP_LOGW(kTag, "XL9555 not reachable, skipping SD power control");
     }
+    g_boot_stage = 2;
 
     // Create terminal backend early so keys can preload before LVGL/display starts.
     if (g_terminal == nullptr) {
         g_terminal = new SSHTerminal();
     }
     load_ssh_keys_from_sd();
+    g_boot_stage = 3;
 
     ret = tpager::diag_display_init(&g_display);
     if (ret == ESP_OK) {
         tpager::diag_display_set_stage(&g_display, "Stage: init I2C");
         show_boot_psram_status();
     }
+    g_boot_stage = 4;
 
     g_keyboard_prerequisites_ready = tca_ready && xl9555_ready;
     tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
@@ -873,11 +909,13 @@ extern "C" void app_main(void)
     if (health_ok != pdPASS) {
         ESP_LOGW(kTag, "Failed to start health task");
     }
+    g_boot_stage = 5;
 
     // Bring up the user-facing terminal before the optional dial. The initial
     // LVGL handoff is user-visible and must not be delayed by a peripheral
     // whose pins may be electrically unsettled during cold boot.
     (void)initialize_terminal_ui_with_retry();
+    g_boot_stage = 6;
 
     tpager::diag_display_set_stage(&g_display, "Stage: encoder init");
     ret = tpager::encoder_init(&g_encoder, kEncoderA, kEncoderB, kEncoderCenter);
@@ -912,6 +950,8 @@ extern "C" void app_main(void)
     if (wifi_boot_ok != pdPASS) {
         ESP_LOGW(kTag, "Failed to start boot wifi task; skipping auto-connect");
     }
+
+    g_boot_stage = 100;
 
     while (true) {
         vTaskDelay(ticks_from_ms(1000));
