@@ -23,6 +23,7 @@
 #include "driver/i2c.h"
 #include "esp_check.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -592,6 +593,14 @@ bool initialize_terminal_ui_with_retry()
             g_terminal->append_text("PocketSSH T-Pager\n");
 #endif
             g_terminal->append_text("Keyboard + encoder active\n");
+            const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+            const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            char psram_status[96] = {};
+            std::snprintf(psram_status, sizeof(psram_status),
+                          "PSRAM: %u KiB total, %u KiB free\n\n",
+                          static_cast<unsigned>(psram_total / 1024),
+                          static_cast<unsigned>(psram_free / 1024));
+            g_terminal->append_text(psram_status);
             lvgl_port_unlock();
             return true;
         }
@@ -794,6 +803,12 @@ extern "C" void app_main(void)
     tpager::diag_display_set_stage(&g_display, keyboard_ok ? "Stage: keyboard ready" : "Stage: keyboard degraded");
     ESP_LOGI(kTag, "keyboard init: %s", keyboard_ok ? "PASS" : "DEGRADED");
 
+    // Bring up the user-facing terminal before the optional dial. The initial
+    // LVGL handoff is user-visible and must not be delayed by a peripheral
+    // whose pins may be electrically unsettled during cold boot.
+    tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
+    (void)initialize_terminal_ui_with_retry();
+
     tpager::diag_display_set_stage(&g_display, "Stage: encoder init");
     ret = tpager::encoder_init(&g_encoder, kEncoderA, kEncoderB, kEncoderCenter);
     if (ret != ESP_OK) {
@@ -802,9 +817,6 @@ extern "C" void app_main(void)
     tpager::diag_display_set_encoder_stats(&g_display, g_encoder_net, g_encoder_transitions);
     tpager::diag_display_set_keyboard_stats(&g_display, g_keyboard_events, g_keyboard_presses, g_keyboard_releases,
                                             gpio_get_level(kKeyboardIrq));
-
-    tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
-    (void)initialize_terminal_ui_with_retry();
 
     BaseType_t runtime_ok =
         xTaskCreatePinnedToCore(runtime_task, "tpager_runtime_task", 8192, nullptr, 5, nullptr, 1);
