@@ -632,10 +632,11 @@ void serial_control_task(void *)
 
         for (ssize_t i = 0; i < nread; ++i) {
             const char ch = buf[i];
-            if (ch == '\r') {
-                continue;
-            }
-            if (ch == '\n') {
+            // Native USB terminal programs commonly translate a pasted LF
+            // into CR. Treat either conventional line ending as one command;
+            // a CRLF pair naturally leaves the second terminator with an
+            // empty buffer and is therefore harmless.
+            if (ch == '\r' || ch == '\n') {
                 if (!line.empty()) {
                     handle_serial_control_line(line);
                     line.clear();
