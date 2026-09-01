@@ -673,6 +673,7 @@ std::string resolve_ssh_config_path();
 std::string resolve_wifi_config_path();
 bool parse_ssh_config_file(SSHConfigFile *parsed);
 bool parse_wifi_config_file(std::vector<WifiProfile> *profiles);
+const WifiProfile *find_wifi_profile(const std::vector<WifiProfile> &profiles, const std::string &name_or_ssid);
 bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name,
                                const std::string &session_token = std::string());
 
@@ -837,6 +838,10 @@ std::string strip_inline_comment(const std::string &line)
 
     for (size_t i = 0; i < line.size(); ++i) {
         const char c = line[i];
+        if (in_quotes && c == '\\' && i + 1 < line.size()) {
+            ++i;
+            continue;
+        }
         if ((c == '"' || c == '\'') && (!in_quotes || c == quote_char)) {
             if (in_quotes) {
                 in_quotes = false;
@@ -872,6 +877,57 @@ std::string trim_matching_quotes(const std::string &value)
         }
     }
     return value;
+}
+
+std::string parse_wifi_config_value(const std::string &raw_value)
+{
+    const std::string value = trim_ascii(raw_value);
+    const bool quoted = value.size() >= 2 &&
+                        ((value.front() == '"' && value.back() == '"') ||
+                         (value.front() == '\'' && value.back() == '\''));
+    std::string decoded = trim_matching_quotes(value);
+    if (!quoted) return decoded;
+
+    std::string result;
+    result.reserve(decoded.size());
+    for (size_t i = 0; i < decoded.size(); ++i) {
+        if (decoded[i] != '\\' || i + 1 >= decoded.size()) {
+            result.push_back(decoded[i]);
+            continue;
+        }
+        const char escaped = decoded[++i];
+        switch (escaped) {
+        case '\\': result.push_back('\\'); break;
+        case '"': result.push_back('"'); break;
+        case '\'': result.push_back('\''); break;
+        case 'n': result.push_back('\n'); break;
+        case 'r': result.push_back('\r'); break;
+        case 't': result.push_back('\t'); break;
+        default:
+            result.push_back('\\');
+            result.push_back(escaped);
+            break;
+        }
+    }
+    return result;
+}
+
+std::string quote_wifi_config_value(const std::string &value)
+{
+    std::string quoted = "\"";
+    quoted.reserve(value.size() + 2);
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '\\': quoted += "\\\\"; break;
+        case '"': quoted += "\\\""; break;
+        case '\n': quoted += "\\n"; break;
+        case '\r': quoted += "\\r"; break;
+        case '\t': quoted += "\\t"; break;
+        default: quoted.push_back(static_cast<char>(ch)); break;
+        }
+    }
+    quoted += '"';
+    return quoted;
 }
 
 bool starts_with_ascii_ci(const std::string &value, const std::string &prefix)
@@ -2377,7 +2433,6 @@ void maybe_push_wifi_profile(const WifiProfile &candidate, std::vector<WifiProfi
     profiles->push_back(candidate);
 }
 
-#if defined(TDECKPLUS_TARGET)
 bool parse_wifi_config_text(const std::string &config_text, std::vector<WifiProfile> *out_profiles)
 {
     if (out_profiles == nullptr) {
@@ -2403,7 +2458,7 @@ bool parse_wifi_config_text(const std::string &config_text, std::vector<WifiProf
         }
 
         const std::string directive = lowercase_ascii(key);
-        const std::string cleaned_value = trim_matching_quotes(trim_ascii(value));
+        const std::string cleaned_value = parse_wifi_config_value(value);
         if (directive == "network") {
             if (in_profile) {
                 maybe_push_wifi_profile(current, out_profiles);
@@ -2441,8 +2496,6 @@ bool parse_wifi_config_text(const std::string &config_text, std::vector<WifiProf
     }
     return true;
 }
-#endif
-
 bool parse_wifi_config_file(std::vector<WifiProfile> *profiles)
 {
     if (profiles == nullptr) {
@@ -2501,7 +2554,7 @@ bool parse_wifi_config_file(std::vector<WifiProfile> *profiles)
             }
 
             const std::string directive = lowercase_ascii(key);
-            const std::string cleaned_value = trim_matching_quotes(trim_ascii(value));
+            const std::string cleaned_value = parse_wifi_config_value(value);
             if (directive == "network") {
                 if (in_profile) {
                     maybe_push_wifi_profile(current, out_profiles);
@@ -2595,6 +2648,144 @@ bool parse_wifi_config_file(std::vector<WifiProfile> *profiles)
     }
 
     ESP_LOGW(TAG, "wifi_config parsed but no profiles found");
+    return true;
+}
+
+struct RawWifiConfigBlock {
+    std::string text;
+    std::string network_name;
+    std::string ssid;
+};
+
+bool read_wifi_config_text(const std::string &path, std::string *out)
+{
+    if (out == nullptr) return false;
+    out->clear();
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return errno == ENOENT;
+    char buffer[512];
+    while (true) {
+        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
+        if (read > 0) out->append(buffer, read);
+        if (read < sizeof(buffer)) break;
+    }
+    const bool ok = std::ferror(file) == 0 && std::fclose(file) == 0;
+    return ok;
+}
+
+void split_wifi_config_blocks(const std::string &text, std::string *prefix,
+                              std::vector<RawWifiConfigBlock> *blocks)
+{
+    if (prefix == nullptr || blocks == nullptr) return;
+    prefix->clear();
+    blocks->clear();
+    std::istringstream input(text);
+    std::string line;
+    RawWifiConfigBlock *current = nullptr;
+    while (std::getline(input, line)) {
+        const std::string raw_line = line + "\n";
+        std::string key;
+        std::string value;
+        const std::string effective = trim_ascii(strip_inline_comment(line));
+        const bool directive = split_directive(effective, &key, &value);
+        const std::string normalized_key = directive ? lowercase_ascii(key) : "";
+        if (directive && normalized_key == "network") {
+            blocks->push_back({});
+            current = &blocks->back();
+            current->network_name = parse_wifi_config_value(value);
+        }
+        if (current == nullptr) {
+            *prefix += raw_line;
+        } else {
+            current->text += raw_line;
+            if (directive && normalized_key == "ssid") {
+                current->ssid = parse_wifi_config_value(value);
+            }
+        }
+    }
+}
+
+bool saved_wifi_profile_name_conflicts(const std::string &name, const std::string &ssid)
+{
+    std::vector<WifiProfile> profiles;
+    if (!parse_wifi_config_file(&profiles)) return false;
+    const std::string lowered_name = lowercase_ascii(name);
+    for (const auto &profile : profiles) {
+        if (lowercase_ascii(profile.network_name) == lowered_name && profile.ssid != ssid) return true;
+    }
+    return false;
+}
+
+bool save_wifi_profile_to_sd(const std::string &name, const std::string &ssid,
+                             const std::string &password, bool auto_connect)
+{
+    ScopedSDMount mount_guard = {};
+    if (!mount_guard.ok()) {
+        ESP_LOGW(TAG, "wifi save: SD mount failed");
+        return false;
+    }
+
+    std::string path;
+#if defined(TDECKPLUS_TARGET)
+    if (g_tdeck_wifi_config_cache_ready && !g_tdeck_wifi_config_cache_path.empty()) {
+        path = g_tdeck_wifi_config_cache_path;
+    }
+#endif
+    if (path.empty()) path = resolve_wifi_config_path();
+    const size_t separator = path.find_last_of('/');
+    if (separator == std::string::npos ||
+        (mkdir(path.substr(0, separator).c_str(), 0755) != 0 && errno != EEXIST)) {
+        ESP_LOGW(TAG, "wifi save: cannot create parent for %s", path.c_str());
+        return false;
+    }
+
+    std::string existing;
+    if (!read_wifi_config_text(path, &existing)) {
+        ESP_LOGW(TAG, "wifi save: cannot read %s", path.c_str());
+        return false;
+    }
+    std::string prefix;
+    std::vector<RawWifiConfigBlock> blocks;
+    split_wifi_config_blocks(existing, &prefix, &blocks);
+    std::string updated = prefix;
+    for (const auto &block : blocks) {
+        if (block.ssid != ssid) updated += block.text;
+    }
+    if (!updated.empty() && updated.back() != '\n') updated += '\n';
+    if (!updated.empty() && updated.back() == '\n') updated += '\n';
+    updated += "Network " + quote_wifi_config_value(name) + "\n";
+    updated += "SSID " + quote_wifi_config_value(ssid) + "\n";
+    updated += "Password " + quote_wifi_config_value(password) + "\n";
+    updated += std::string("AutoConnect ") + (auto_connect ? "true\n" : "false\n");
+
+    const std::string temporary = path + ".tmp";
+    FILE *file = std::fopen(temporary.c_str(), "wb");
+    bool durable = file != nullptr;
+    if (durable && std::fwrite(updated.data(), 1, updated.size(), file) != updated.size()) durable = false;
+    if (durable && (std::fflush(file) != 0 || ::fsync(fileno(file)) != 0)) durable = false;
+    if (file != nullptr && std::fclose(file) != 0) durable = false;
+    if (!durable || std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        ESP_LOGW(TAG, "wifi save: atomic update failed for %s", path.c_str());
+        return false;
+    }
+
+    std::string readback;
+    std::vector<WifiProfile> verified;
+    if (!read_wifi_config_text(path, &readback) || !parse_wifi_config_text(readback, &verified)) {
+        ESP_LOGW(TAG, "wifi save: readback verification failed for %s", path.c_str());
+        return false;
+    }
+    const WifiProfile *saved = find_wifi_profile(verified, name);
+    if (saved == nullptr || saved->ssid != ssid || saved->password != password ||
+        !saved->has_auto_connect || saved->auto_connect != auto_connect) {
+        ESP_LOGW(TAG, "wifi save: readback profile mismatch for %s", path.c_str());
+        return false;
+    }
+#if defined(TDECKPLUS_TARGET)
+    pocketssh_set_cached_wifi_config_text(path.c_str(), readback.c_str());
+#endif
+    ESP_LOGI(TAG, "wifi save: profile '%s' stored in %s", name.c_str(), path.c_str());
     return true;
 }
 
@@ -3687,6 +3878,7 @@ SSHTerminal::SSHTerminal()
       cursor_pos(0),
       bytes_received(0),
       history_index(-1),
+      wifi_save_stage(WifiSaveStage::None),
       cursor_blink_timer(NULL),
       terminal_notice_timer(NULL),
       cursor_visible(true),
@@ -4282,6 +4474,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
         "   wifi auto - Try AutoConnect profiles in file order\n"
         "   connect <ALIAS> - Resolve via ssh_config and SSH key\n"
         "   connect <SSID> <PASSWORD>  - WiFi connect\n"
+        "   connect --save <SSID> <PASSWORD> - Connect, then save profile to SD\n"
         "   fontsize [big|normal] - Toggle/set font size\n"
         "   /color <name> - red orange yellow green blue purple white\n"
         "     Use quotes for spaces: connect \"My WiFi\" \"my pass\"\n"
@@ -4368,6 +4561,78 @@ void SSHTerminal::clear_terminal()
     }
 }
 
+void SSHTerminal::cancel_saved_wifi_connect(const char *reason)
+{
+    wifi_save_stage = WifiSaveStage::None;
+    pending_saved_wifi_ssid.clear();
+    pending_saved_wifi_password.clear();
+    pending_saved_wifi_name.clear();
+    append_text(reason != nullptr ? reason : "WiFi profile save cancelled\n");
+}
+
+void SSHTerminal::begin_saved_wifi_connect(const std::string &ssid, const std::string &password)
+{
+    if (ssid.empty() || password.empty()) {
+        append_text("Usage: connect --save <SSID> <PASSWORD>\n");
+        return;
+    }
+    pending_saved_wifi_ssid = ssid;
+    pending_saved_wifi_password = password;
+    pending_saved_wifi_name.clear();
+    wifi_save_stage = WifiSaveStage::AwaitFriendlyName;
+    append_text("Profile name (or 'cancel'):\n> ");
+}
+
+bool SSHTerminal::handle_saved_wifi_prompt(const std::string &line)
+{
+    const std::string response = trim_ascii(line);
+    if (lowercase_ascii(response) == "cancel") {
+        cancel_saved_wifi_connect("WiFi profile save cancelled\n");
+        return true;
+    }
+    if (wifi_save_stage == WifiSaveStage::AwaitFriendlyName) {
+        const std::string name = trim_matching_quotes(response);
+        if (name.empty()) {
+            append_text("Profile name is required (or 'cancel'):\n> ");
+            return true;
+        }
+        if (saved_wifi_profile_name_conflicts(name, pending_saved_wifi_ssid)) {
+            append_text("That profile name is already assigned to another SSID. Choose another:\n> ");
+            return true;
+        }
+        pending_saved_wifi_name = name;
+        wifi_save_stage = WifiSaveStage::AwaitAutoConnect;
+        append_text("AutoConnect on boot? (y/n, or 'cancel'):\n> ");
+        return true;
+    }
+    if (wifi_save_stage != WifiSaveStage::AwaitAutoConnect) return false;
+
+    const std::string answer = lowercase_ascii(response);
+    if (answer != "y" && answer != "yes" && answer != "n" && answer != "no") {
+        append_text("Please enter y or n (or 'cancel'):\n> ");
+        return true;
+    }
+    const bool auto_connect = answer == "y" || answer == "yes";
+    append_text("Connecting to WiFi: ");
+    append_text(pending_saved_wifi_ssid.c_str());
+    append_text("\n");
+    if (init_wifi(pending_saved_wifi_ssid.c_str(), pending_saved_wifi_password.c_str()) != ESP_OK) {
+        cancel_saved_wifi_connect("WiFi connection failed; profile was not saved\n");
+        return true;
+    }
+    if (save_wifi_profile_to_sd(pending_saved_wifi_name, pending_saved_wifi_ssid,
+                                pending_saved_wifi_password, auto_connect)) {
+        append_text("WiFi connected and profile saved to SD\n");
+    } else {
+        append_text("WiFi connected, but the profile was not saved to SD\n");
+    }
+    wifi_save_stage = WifiSaveStage::None;
+    pending_saved_wifi_ssid.clear();
+    pending_saved_wifi_password.clear();
+    pending_saved_wifi_name.clear();
+    return true;
+}
+
 void SSHTerminal::handle_key_input(char key)
 {
     if (ssh_connected) {
@@ -4395,11 +4660,29 @@ void SSHTerminal::handle_key_input(char key)
 
     if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
+            const bool handling_saved_wifi_prompt = wifi_save_stage != WifiSaveStage::None;
+            bool credential_bearing_command = false;
+            std::string displayed_input = current_input;
+            if (!handling_saved_wifi_prompt && current_input.rfind("connect ", 0) == 0) {
+                const std::vector<std::string> connect_args = split_quoted_arguments(current_input, 8);
+                const bool save_form = connect_args.size() >= 3 && connect_args[0] == "--save";
+                const bool direct_form = connect_args.size() >= 2 && connect_args[0] != "--save";
+                if (save_form || direct_form) {
+                    credential_bearing_command = true;
+                    displayed_input = "connect ";
+                    if (save_form) displayed_input += "--save ";
+                    displayed_input += connect_args[save_form ? 1 : 0];
+                    displayed_input += " <redacted>";
+                }
+            }
             append_text("\n> ");
-            append_text(current_input.c_str());
+            append_text(displayed_input.c_str());
             append_text("\n");
             
-            if (current_input == "/color" || current_input.rfind("/color ", 0) == 0 ||
+            if (handling_saved_wifi_prompt) {
+                (void)handle_saved_wifi_prompt(current_input);
+            }
+            else if (current_input == "/color" || current_input.rfind("/color ", 0) == 0 ||
                 current_input == "color" || current_input.rfind("color ", 0) == 0) {
                 if (ssh_connected) {
                     append_text("/color is only available when not in an SSH session\n");
@@ -4482,6 +4765,10 @@ void SSHTerminal::handle_key_input(char key)
 
                 if (args.size() == 1) {
                     connect_using_ssh_alias(this, args[0]);
+                } else if (args.size() == 3 && args[0] == "--save") {
+                    begin_saved_wifi_connect(args[1], args[2]);
+                } else if (!args.empty() && args[0] == "--save") {
+                    append_text("Usage: connect --save <SSID> <PASSWORD>\n");
                 } else if (args.size() >= 2) {
                     std::string ssid = args[0];
                     std::string password = args[1];
@@ -4499,6 +4786,7 @@ void SSHTerminal::handle_key_input(char key)
                     append_text("Usage:\n");
                     append_text("  connect <ALIAS>\n");
                     append_text("  connect <SSID> <PASSWORD>\n");
+                    append_text("  connect --save <SSID> <PASSWORD>\n");
                     append_text("  Use quotes for SSIDs/passwords with spaces: connect \"My WiFi\" password\n");
                 }
             }
@@ -4689,6 +4977,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("  hosts - List aliases from /sdcard/ssh_keys/ssh_config or /sd/ssh_keys/ssh_config\n");
                 append_text("  connect <ALIAS> - Resolve alias from ssh_config and connect via key\n");
                 append_text("  connect <SSID> <PASSWORD> - Connect to WiFi\n");
+                append_text("  connect --save <SSID> <PASSWORD> - Connect, then save a named WiFi profile\n");
                 append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
                 append_text("  netinfo - Show WiFi IP/netmask/gateway\n");
                 append_text("  sdcheck - Probe SD mountpoints and config visibility\n");
@@ -4753,12 +5042,14 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("Unknown command. Type 'help' for commands.\n");
             }
             
-            auto it = std::find(command_history.begin(), command_history.end(), current_input);
-            if (it != command_history.end()) {
-                command_history.erase(it);
+            if (!handling_saved_wifi_prompt && !credential_bearing_command) {
+                auto it = std::find(command_history.begin(), command_history.end(), current_input);
+                if (it != command_history.end()) {
+                    command_history.erase(it);
+                }
+                command_history.push_back(current_input);
+                history_needs_save = true;
             }
-            command_history.push_back(current_input);
-            history_needs_save = true;
             current_input.clear();
             cursor_pos = 0;
             history_index = -1;

@@ -82,6 +82,12 @@ public:
     std::vector<std::string> get_loaded_key_names();
     
 private:
+    enum class WifiSaveStage : uint8_t {
+        None,
+        AwaitFriendlyName,
+        AwaitAutoConnect,
+    };
+
     lv_obj_t* terminal_screen;
     lv_obj_t* terminal_output;
     // The local prompt retains the lightweight textarea.  SSH output uses a
@@ -112,6 +118,10 @@ private:
     size_t bytes_received;
     std::vector<std::string> command_history;
     int history_index;
+    WifiSaveStage wifi_save_stage;
+    std::string pending_saved_wifi_ssid;
+    std::string pending_saved_wifi_password;
+    std::string pending_saved_wifi_name;
     
     lv_timer_t* cursor_blink_timer;
     lv_timer_t* terminal_notice_timer;
@@ -208,6 +218,9 @@ private:
     void flush_display_buffer();
     void send_terminal_bytes(const std::string &bytes);
     void sync_terminal_geometry(bool notify_remote);
+    void begin_saved_wifi_connect(const std::string &ssid, const std::string &password);
+    bool handle_saved_wifi_prompt(const std::string &line);
+    void cancel_saved_wifi_connect(const char *reason);
     bool verify_host_key(const char *host, int port, const std::string &strict_host_key_checking);
     bool save_pending_host_key();
     void copy_visible_terminal();
