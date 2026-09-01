@@ -1533,6 +1533,79 @@ bool valid_serial_target_name(const std::string &name)
     return true;
 }
 
+bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
+{
+    if (terminal == nullptr || !valid_serial_target_name(target_name)) {
+        return false;
+    }
+
+    ScopedSDMount mount_guard = {};
+    if (!mount_guard.ok()) {
+        terminal->append_text("sdverify: SD mount failed\n");
+        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=mount", target_name.c_str());
+        return false;
+    }
+
+#if defined(TDECKPLUS_TARGET)
+    const char *root_dir = "/sdcard";
+#else
+    const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" :
+                           (path_exists_dir("/sd") ? "/sd" : nullptr);
+#endif
+    if (root_dir == nullptr) {
+        terminal->append_text("sdverify: no SD root\n");
+        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=no-root", target_name.c_str());
+        return false;
+    }
+
+    const std::string path = std::string(root_dir) + "/" + target_name;
+    struct stat file_stat = {};
+    if (stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+        terminal->append_text("sdverify: file not found\n");
+        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=not-found", path.c_str());
+        return false;
+    }
+
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+        terminal->append_text("sdverify: file open failed\n");
+        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=open", path.c_str());
+        return false;
+    }
+
+    uint8_t buffer[1024];
+    size_t total = 0;
+    uint32_t crc = 0;
+    bool read_ok = true;
+    while (true) {
+        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
+        if (read > 0) {
+            crc = esp_crc32_le(crc, buffer, static_cast<uint32_t>(read));
+            total += read;
+        }
+        if (read < sizeof(buffer)) {
+            if (std::ferror(file) != 0) read_ok = false;
+            break;
+        }
+    }
+    std::fclose(file);
+
+    if (!read_ok || total != static_cast<size_t>(file_stat.st_size)) {
+        terminal->append_text("sdverify: read failed\n");
+        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=read bytes=%u expected=%u",
+                 path.c_str(), static_cast<unsigned>(total), static_cast<unsigned>(file_stat.st_size));
+        return false;
+    }
+
+    char line[128];
+    std::snprintf(line, sizeof(line), "sdverify: %s bytes=%u crc=%08" PRIx32 "\n",
+                  target_name.c_str(), static_cast<unsigned>(total), crc);
+    terminal->append_text(line);
+    ESP_LOGW(TAG, "POCKETCTL sdverify path=%s bytes=%u crc=%08" PRIx32,
+             path.c_str(), static_cast<unsigned>(total), crc);
+    return true;
+}
+
 bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name)
 {
     if (terminal == nullptr) {
@@ -4210,6 +4283,13 @@ void SSHTerminal::handle_key_input(char key)
             else if (current_input == "sdcheck") {
                 append_sd_probe(this);
             }
+            else if (current_input.rfind("sdverify", 0) == 0) {
+                const std::vector<std::string> args = split_quoted_arguments(current_input, 2);
+                const std::string target_name = args.empty() ? "" : args[0];
+                if (!verify_sd_artifact(this, target_name)) {
+                    append_text("sdverify: failed\n");
+                }
+            }
             else if (current_input.rfind("serialrx", 0) == 0) {
                 if (ssh_connected) {
                     append_text("serialrx unavailable during active SSH session\n");
@@ -4328,6 +4408,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
                 append_text("  netinfo - Show WiFi IP/netmask/gateway\n");
                 append_text("  sdcheck - Probe SD mountpoints and config visibility\n");
+                append_text("  sdverify <filename> - Report SD file size and CRC32\n");
                 append_text("  serialrx [filename] - Receive file into SD root (default: ");
                 append_text(kDefaultSerialRxFilename);
                 append_text(")\n");
