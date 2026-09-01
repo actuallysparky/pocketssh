@@ -89,6 +89,9 @@ bool g_shutdown_requested = false;
 // -1 = terminal screen could not be created, 0 = handoff pending, 1 = active.
 // Kept intentionally simple because it is read by a diagnostic task only.
 volatile int g_terminal_ui_state = 0;
+// -1 = keyboard unavailable, 0 = initialization pending, 1 = ready.
+volatile int g_keyboard_state = 0;
+bool g_keyboard_prerequisites_ready = false;
 bool g_alt_held = false;
 bool g_caps_held = false;
 bool g_encoder_center_held = false;
@@ -568,7 +571,9 @@ void runtime_task(void *)
         // Keep a short poll timeout so brief key taps (especially Space fallback)
         // are handled with low latency even if IRQ edges are imperfect.
         (void)ulTaskNotifyTake(pdTRUE, ticks_from_ms(10));
-        poll_keyboard();
+        if (g_keyboard_state == 1) {
+            poll_keyboard();
+        }
         poll_encoder();
     }
 }
@@ -582,11 +587,74 @@ void runtime_health_task(void *)
     while (true) {
         const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
         const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        ESP_LOGI(kTag, "PAGER_HEALTH ui=%d psram=%u/%uK", g_terminal_ui_state,
+        ESP_LOGI(kTag, "PAGER_HEALTH ui=%d kbd=%d psram=%u/%uK", g_terminal_ui_state, g_keyboard_state,
                  static_cast<unsigned>(psram_free / 1024),
                  static_cast<unsigned>(psram_total / 1024));
         vTaskDelay(ticks_from_ms(5000));
     }
+}
+
+bool configure_keyboard_interrupt()
+{
+    gpio_config_t irq_cfg = {};
+    irq_cfg.mode = GPIO_MODE_INPUT;
+    irq_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+    irq_cfg.pin_bit_mask = (1ULL << kKeyboardIrq);
+    esp_err_t ret = gpio_config(&irq_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGW(kTag, "keyboard IRQ gpio_config failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_intr_type(kKeyboardIrq, GPIO_INTR_NEGEDGE));
+    ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(kTag, "gpio_install_isr_service failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_isr_handler_add(kKeyboardIrq, keyboard_irq_isr, nullptr));
+    return true;
+}
+
+void keyboard_init_task(void *)
+{
+    // I2C keyboard bring-up must never prevent the terminal from becoming
+    // usable. A bad peripheral transaction therefore degrades keyboard input
+    // while leaving display, Wi-Fi, and the terminal core alive.
+    if (!g_keyboard_prerequisites_ready) {
+        ESP_LOGW(kTag, "keyboard prerequisites unavailable");
+        g_keyboard_state = -1;
+        append_terminal_text("Keyboard unavailable; terminal remains usable\n");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    bool keyboard_ok = keyboard_power_reset(tpager::XL9555_PIN_KB_POWER_EN_PRIMARY);
+    if (!keyboard_ok) {
+        keyboard_ok = keyboard_power_reset(tpager::XL9555_PIN_KB_POWER_EN_FALLBACK);
+    }
+    if (keyboard_ok) {
+        const esp_err_t matrix_ret = tpager::tca8418_configure_matrix(&g_tca8418, 4, 10);
+        if (matrix_ret != ESP_OK) {
+            ESP_LOGW(kTag, "tca8418_configure_matrix failed: %s", esp_err_to_name(matrix_ret));
+            keyboard_ok = false;
+        }
+    }
+    if (keyboard_ok) {
+        const esp_err_t flush_ret = tpager::tca8418_flush_fifo(g_tca8418);
+        if (flush_ret != ESP_OK) {
+            ESP_LOGW(kTag, "tca8418_flush_fifo failed: %s", esp_err_to_name(flush_ret));
+            keyboard_ok = false;
+        }
+    }
+    if (keyboard_ok) {
+        keyboard_ok = configure_keyboard_interrupt();
+    }
+
+    g_keyboard_state = keyboard_ok ? 1 : -1;
+    append_terminal_text(keyboard_ok ? "Keyboard ready\n" : "Keyboard unavailable; terminal remains usable\n");
+    ESP_LOGI(kTag, "keyboard init: %s", keyboard_ok ? "PASS" : "DEGRADED");
+    vTaskDelete(nullptr);
 }
 
 bool initialize_terminal_ui_with_retry()
@@ -817,46 +885,8 @@ extern "C" void app_main(void)
         show_boot_psram_status();
     }
 
-    tpager::diag_display_set_stage(&g_display, "Stage: keyboard init");
-    bool keyboard_ok = false;
-    if (tca_ready && xl9555_ready) {
-        keyboard_ok = keyboard_power_reset(tpager::XL9555_PIN_KB_POWER_EN_PRIMARY);
-        if (!keyboard_ok) {
-            keyboard_ok = keyboard_power_reset(tpager::XL9555_PIN_KB_POWER_EN_FALLBACK);
-        }
-        ret = tpager::tca8418_configure_matrix(&g_tca8418, 4, 10);
-        if (ret != ESP_OK) {
-            ESP_LOGE(kTag, "tca8418_configure_matrix failed: %s", esp_err_to_name(ret));
-            keyboard_ok = false;
-        }
-        ret = tpager::tca8418_flush_fifo(g_tca8418);
-        if (ret != ESP_OK) {
-            ESP_LOGE(kTag, "tca8418_flush_fifo failed: %s", esp_err_to_name(ret));
-            keyboard_ok = false;
-        }
-    } else {
-        ESP_LOGW(kTag, "Skipping keyboard init (i2c/tca/xl9555 unavailable)");
-    }
-
-    gpio_config_t irq_cfg = {};
-    irq_cfg.mode = GPIO_MODE_INPUT;
-    irq_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-    irq_cfg.pin_bit_mask = (1ULL << kKeyboardIrq);
-    ret = gpio_config(&irq_cfg);
-    if (ret == ESP_OK) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_intr_type(kKeyboardIrq, GPIO_INTR_NEGEDGE));
-        ret = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(kTag, "gpio_install_isr_service failed: %s", esp_err_to_name(ret));
-        } else {
-            ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_isr_handler_add(kKeyboardIrq, keyboard_irq_isr, nullptr));
-        }
-    } else {
-        ESP_LOGW(kTag, "keyboard IRQ gpio_config failed: %s", esp_err_to_name(ret));
-    }
-
-    tpager::diag_display_set_stage(&g_display, keyboard_ok ? "Stage: keyboard ready" : "Stage: keyboard degraded");
-    ESP_LOGI(kTag, "keyboard init: %s", keyboard_ok ? "PASS" : "DEGRADED");
+    g_keyboard_prerequisites_ready = tca_ready && xl9555_ready;
+    tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
 
     BaseType_t health_ok =
         xTaskCreatePinnedToCore(runtime_health_task, "tpager_health", 3072, nullptr, 2, nullptr, 0);
@@ -867,7 +897,6 @@ extern "C" void app_main(void)
     // Bring up the user-facing terminal before the optional dial. The initial
     // LVGL handoff is user-visible and must not be delayed by a peripheral
     // whose pins may be electrically unsettled during cold boot.
-    tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
     (void)initialize_terminal_ui_with_retry();
 
     tpager::diag_display_set_stage(&g_display, "Stage: encoder init");
@@ -883,6 +912,12 @@ extern "C" void app_main(void)
         xTaskCreatePinnedToCore(runtime_task, "tpager_runtime_task", 8192, nullptr, 5, nullptr, 1);
     if (runtime_ok != pdPASS) {
         ESP_LOGE(kTag, "Failed to start runtime task; keyboard/encoder disabled");
+    }
+    BaseType_t keyboard_boot_ok =
+        xTaskCreatePinnedToCore(keyboard_init_task, "tpager_keyboard_init", 4096, nullptr, 4, nullptr, 0);
+    if (keyboard_boot_ok != pdPASS) {
+        g_keyboard_state = -1;
+        ESP_LOGW(kTag, "Failed to start keyboard init task");
     }
     BaseType_t serial_ctl_ok =
         xTaskCreatePinnedToCore(serial_control_task, "tpager_serial_ctl", 4096, nullptr, 3, nullptr, 0);

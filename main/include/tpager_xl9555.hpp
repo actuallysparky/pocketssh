@@ -8,10 +8,12 @@
 
 namespace tpager {
 
-// T-Pager keyboard gating lines per LilyGo docs + live validation fallback.
+// T-Pager keyboard gating lines per LilyGo documentation. GPIO8 is the
+// documented keyboard supply enable; retain GPIO10 only as a compatibility
+// fallback for early board revisions.
 constexpr uint8_t XL9555_PIN_KB_RESET = 2;
-constexpr uint8_t XL9555_PIN_KB_POWER_EN_PRIMARY = 10;
-constexpr uint8_t XL9555_PIN_KB_POWER_EN_FALLBACK = 8;
+constexpr uint8_t XL9555_PIN_KB_POWER_EN_PRIMARY = 8;
+constexpr uint8_t XL9555_PIN_KB_POWER_EN_FALLBACK = 10;
 // T-Pager storage/presence controls from LilyGo docs.
 constexpr uint8_t XL9555_PIN_SD_DETECT = 12;
 constexpr uint8_t XL9555_PIN_SD_POWER_EN = 14;
