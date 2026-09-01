@@ -1790,6 +1790,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
 
     std::vector<uint8_t> chunk;
     size_t received = partial_size;
+    size_t last_persisted = partial_size;
     int last_percent = -1;
 
     while (received < expected_size) {
@@ -1852,6 +1853,19 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             return false;
         }
         received += chunk.size();
+
+        // Closing the USB-JTAG host port resets this target. Persist bounded
+        // progress while the stream is active so a host timeout can resume
+        // safely instead of discarding the whole segment.
+        if (received - last_persisted >= 16 * 1024) {
+            if (std::fflush(out) != 0 || fsync(fileno(out)) != 0) {
+                terminal->append_text("serialrx: partial sync failure\n");
+                std::fclose(out);
+                ESP_LOGE(TAG, "serialrx partial sync failed path=%s", partial_path.c_str());
+                return false;
+            }
+            last_persisted = received;
+        }
 
         const int pct = (expected_size == 0) ? 100 : static_cast<int>((received * 100U) / expected_size);
         if (pct >= last_percent + 10 || pct == 100) {
