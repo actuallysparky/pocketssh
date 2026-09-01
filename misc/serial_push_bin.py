@@ -161,6 +161,25 @@ def wait_for_completion(ser: serial.Serial, timeout_s: float, expected_bytes: in
     return False
 
 
+def wait_for_abort(ser: serial.Serial, timeout_s: float) -> bool:
+    """Require firmware acknowledgement before treating a staging reset as complete."""
+    deadline = time.time() + max(0.1, timeout_s)
+    window = ""
+    while time.time() < deadline:
+        chunk = ser.read(4096)
+        if not chunk:
+            continue
+        text = chunk.decode(errors="ignore")
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        window = (window + text).lower()
+        if len(window) > 4096:
+            window = window[-4096:]
+        if "serialrx: aborted by host" in window:
+            return True
+    return False
+
+
 def main() -> int:
     args = parse_args()
     if args.target == "tdeckplus" and args.file == str(DEFAULT_PACKAGED_BIN):
@@ -215,9 +234,15 @@ def main() -> int:
 
         if args.reset_partial:
             header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
-            ser.write(header)
+            for _ in range(3):
+                ser.write(header)
+                ser.flush()
+                time.sleep(0.04)
             ser.write(b"ABORT\n")
             ser.flush()
+            if not wait_for_abort(ser, args.tail_seconds):
+                print("Timed out waiting for device staging-reset acknowledgement.", file=sys.stderr)
+                return 4
             print(f"Discarded device partial at offset {start_offset}.")
             return 0
 
