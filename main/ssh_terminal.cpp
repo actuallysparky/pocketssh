@@ -4545,7 +4545,7 @@ void SSHTerminal::handle_key_input(char key)
                 if (ssh_connected) {
                     append_text("netrx unavailable during active SSH session\n");
                 } else {
-                    const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
+                    const std::vector<std::string> args = split_quoted_arguments(current_input, 6);
                     uint64_t expected_size = 0;
                     uint32_t expected_crc = 0;
                     if (args.size() < 4 || !parse_u64_decimal(args[2], &expected_size) ||
