@@ -572,44 +572,42 @@ void runtime_task(void *)
 
 bool initialize_terminal_ui_with_retry()
 {
-    // The first full diagnostic-frame flush can still hold LVGL's mutex while
-    // early I2C/input work completes.  A single 50 ms attempt left the normal
-    // runtime permanently showing that boot frame on real hardware.  Retry
-    // with bounded waits instead of treating a transient display lock as a
-    // terminal-initialization failure.
-    constexpr int kUiLockAttempts = 12;
-    for (int attempt = 0; attempt < kUiLockAttempts; ++attempt) {
-        if (!lvgl_port_lock(250)) {
-            vTaskDelay(ticks_from_ms(75));
-            continue;
-        }
-
-        lv_obj_t *screen = g_terminal != nullptr ? g_terminal->create_terminal_screen() : nullptr;
-        if (screen != nullptr) {
-            lv_scr_load(screen);
-#ifdef POCKETSSH_VERSION
-            g_terminal->append_text("PocketSSH v" POCKETSSH_VERSION "\n");
-#else
-            g_terminal->append_text("PocketSSH T-Pager\n");
-#endif
-            g_terminal->append_text("Keyboard + encoder active\n");
-            const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-            const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-            char psram_status[96] = {};
-            std::snprintf(psram_status, sizeof(psram_status),
-                          "PSRAM: %u KiB total, %u KiB free\n\n",
-                          static_cast<unsigned>(psram_total / 1024),
-                          static_cast<unsigned>(psram_free / 1024));
-            g_terminal->append_text(psram_status);
-            lvgl_port_unlock();
-            return true;
-        }
-
-        lvgl_port_unlock();
-        break;
+    // The diagnostic frame deliberately starts LVGL before the full terminal.
+    // Its first DMA flush may hold LVGL's recursive mutex longer than a short
+    // boot-time timeout.  `0` is the esp_lvgl_port contract for waiting until
+    // the mutex is available; use it once here so a healthy display cannot be
+    // left permanently on the diagnostic frame merely because the first flush
+    // was slow.  This runs before the input/network tasks are started, so it
+    // cannot starve an interactive path.
+    if (!lvgl_port_lock(0)) {
+        ESP_LOGE(kTag, "Failed to acquire LVGL lock for terminal UI");
+        tpager::diag_display_set_stage(&g_display, "Stage: terminal UI unavailable");
+        return false;
     }
 
-    ESP_LOGE(kTag, "Failed to acquire LVGL lock for terminal UI after %d attempts", kUiLockAttempts);
+    lv_obj_t *screen = g_terminal != nullptr ? g_terminal->create_terminal_screen() : nullptr;
+    if (screen != nullptr) {
+        lv_scr_load(screen);
+#ifdef POCKETSSH_VERSION
+        g_terminal->append_text("PocketSSH v" POCKETSSH_VERSION "\n");
+#else
+        g_terminal->append_text("PocketSSH T-Pager\n");
+#endif
+        g_terminal->append_text("Keyboard + encoder active\n");
+        const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        char psram_status[96] = {};
+        std::snprintf(psram_status, sizeof(psram_status),
+                      "PSRAM: %u KiB total, %u KiB free\n\n",
+                      static_cast<unsigned>(psram_total / 1024),
+                      static_cast<unsigned>(psram_free / 1024));
+        g_terminal->append_text(psram_status);
+        lvgl_port_unlock();
+        return true;
+    }
+
+    lvgl_port_unlock();
+    ESP_LOGE(kTag, "Failed to create terminal UI");
     tpager::diag_display_set_stage(&g_display, "Stage: terminal UI unavailable");
     return false;
 }
