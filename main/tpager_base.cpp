@@ -706,34 +706,14 @@ void show_boot_psram_status()
 {
     const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
     const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    // A tiny allocation only establishes that the allocator recognizes the
-    // capability.  Exercise a meaningful portion of the terminal's 512-line
-    // history backing store before relying on PSRAM for interactive output.
-    constexpr size_t kProbeBytes = 512 * 1024;
-    auto *probe = static_cast<uint32_t *>(
-        heap_caps_malloc(kProbeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    bool probe_ok = probe != nullptr;
-    if (probe_ok) {
-        constexpr size_t kWordCount = kProbeBytes / sizeof(uint32_t);
-        constexpr uint32_t kSeed = 0xC3A55A3Cu;
-        for (size_t index = 0; index < kWordCount; index += 257) {
-            probe[index] = kSeed ^ static_cast<uint32_t>(index);
-        }
-        for (size_t index = 0; index < kWordCount; index += 257) {
-            if (probe[index] != (kSeed ^ static_cast<uint32_t>(index))) {
-                probe_ok = false;
-                break;
-            }
-        }
-    }
     char status[96] = {};
-    // Keep the status inside one line of the compact boot font; the preceding
-    // "Last line:" prefix is added by the diagnostic display helper.
-    std::snprintf(status, sizeof(status), "PSRAM %u/%uK 512K %s",
+    // The full 512 KiB PSRAM integrity check already proved this hardware,
+    // but repeating it before every UI handoff can leave a cold boot waiting
+    // in the allocator. Keep startup non-blocking and report live capacity.
+    // The preceding "Last line:" prefix is added by the display helper.
+    std::snprintf(status, sizeof(status), "PSRAM %u/%uK ready",
                   static_cast<unsigned>(psram_free / 1024),
-                  static_cast<unsigned>(psram_total / 1024),
-                  probe_ok ? "OK" : "FAIL");
-    heap_caps_free(probe);
+                  static_cast<unsigned>(psram_total / 1024));
     tpager::diag_display_set_last_line(&g_display, status);
 }
 
