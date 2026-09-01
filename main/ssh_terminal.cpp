@@ -1706,14 +1706,22 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
 
     std::string line;
     std::vector<std::string> begin_parts;
+    size_t ignored_preheader_lines = 0;
+    size_t ignored_preheader_bytes = 0;
     const int64_t begin_deadline_us = esp_timer_get_time() + 30000LL * 1000;
     while (esp_timer_get_time() < begin_deadline_us) {
         const int remaining_ms = static_cast<int>((begin_deadline_us - esp_timer_get_time()) / 1000);
         if (!serial_read_line_with_timeout(std::max(1, remaining_ms), &line)) break;
         begin_parts = split_nonempty_whitespace(line);
         if (begin_parts.size() >= 4 && lowercase_ascii(begin_parts[0]) == "begin") break;
-        ESP_LOGW(TAG, "POCKETCTL serialrx_ignored_preheader bytes=%u", static_cast<unsigned>(line.size()));
+        ++ignored_preheader_lines;
+        ignored_preheader_bytes += line.size();
         begin_parts.clear();
+    }
+    if (ignored_preheader_lines != 0) {
+        ESP_LOGW(TAG, "POCKETCTL serialrx_discarded_preheader lines=%u bytes=%u",
+                 static_cast<unsigned>(ignored_preheader_lines),
+                 static_cast<unsigned>(ignored_preheader_bytes));
     }
     if (begin_parts.size() < 4 || lowercase_ascii(begin_parts[0]) != "begin") {
         terminal->append_text("serialrx: timeout waiting for BEGIN\n");
