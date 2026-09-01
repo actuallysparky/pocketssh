@@ -162,6 +162,7 @@ esp_err_t init_lvgl(DiagDisplay *display)
         return ESP_FAIL;
     }
 
+#if defined(TPAGER_DIAG)
     if (!lvgl_port_lock(0)) {
         return ESP_ERR_TIMEOUT;
     }
@@ -214,6 +215,13 @@ esp_err_t init_lvgl(DiagDisplay *display)
     lv_label_set_text(corner_br, "+");
 
     lvgl_port_unlock();
+#else
+    // Production must hand the first LVGL frame directly to PocketSSH.  The
+    // prior diagnostic frame scheduled an asynchronous flush during exactly
+    // the interval in which app_main constructs the terminal; on this Pager
+    // that could leave the handoff waiting on the LVGL mutex indefinitely.
+    // TPAGER_DIAG retains the detailed, standalone hardware screen above.
+#endif
     return ESP_OK;
 }
 
