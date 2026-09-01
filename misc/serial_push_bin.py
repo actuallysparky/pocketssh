@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Persist at most this many payload bytes, then send PAUSE for resumable staging (default: complete file)",
     )
+    parser.add_argument("--reset-partial", action="store_true",
+                        help="Discard the device's resumable partial for this filename before staging")
     parser.add_argument(
         "--baud",
         type=int,
@@ -205,6 +207,14 @@ def main() -> int:
         if start_offset < 0 or start_offset > total:
             print(f"Device reported invalid resume offset: {start_offset}", file=sys.stderr)
             return 3
+
+        if args.reset_partial:
+            header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
+            ser.write(header)
+            ser.write(b"ABORT\n")
+            ser.flush()
+            print(f"Discarded device partial at offset {start_offset}.")
+            return 0
 
         header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
         ser.write(header)
