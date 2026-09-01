@@ -1,4 +1,5 @@
 #include "terminal_core.hpp"
+#include "host_key_policy.hpp"
 
 #include <cassert>
 #include <cstring>
@@ -80,6 +81,27 @@ void test_ignored_control_sequences_are_bounded()
     term.feed(oversized.data(), oversized.size());
     assert(term.row(0)[2].codepoint == 'C');
     assert(term.row(0)[3].codepoint == 'D');
+}
+
+void test_host_key_policy()
+{
+    const std::string known = "prodmini 22 ssh-ed25519 abc123\n";
+    assert(pocketssh::classify_known_host(known, "prodmini", 22, "ssh-ed25519", "abc123") ==
+           pocketssh::HostKeyTrustState::Matching);
+    assert(pocketssh::classify_known_host(known, "prodmini", 22, "ssh-ed25519", "different") ==
+           pocketssh::HostKeyTrustState::Changed);
+    assert(pocketssh::classify_known_host(known, "other", 22, "ssh-ed25519", "abc123") ==
+           pocketssh::HostKeyTrustState::Unknown);
+    assert(pocketssh::host_key_policy_action(pocketssh::HostKeyTrustState::Matching, "ask") ==
+           pocketssh::HostKeyPolicyAction::Allow);
+    assert(pocketssh::host_key_policy_action(pocketssh::HostKeyTrustState::Changed, "no") ==
+           pocketssh::HostKeyPolicyAction::Reject);
+    assert(pocketssh::host_key_policy_action(pocketssh::HostKeyTrustState::Unknown, "yes") ==
+           pocketssh::HostKeyPolicyAction::Reject);
+    assert(pocketssh::host_key_policy_action(pocketssh::HostKeyTrustState::Unknown, "ask") ==
+           pocketssh::HostKeyPolicyAction::Prompt);
+    assert(pocketssh::host_key_policy_action(pocketssh::HostKeyTrustState::Unknown, "no") ==
+           pocketssh::HostKeyPolicyAction::Allow);
 }
 
 void test_scroll_and_key_encoding()
@@ -245,6 +267,7 @@ int main()
     test_less_alternate_screen_and_live_redraw_streams();
     test_form_feed_clears_and_homes();
     test_ignored_control_sequences_are_bounded();
+    test_host_key_policy();
     std::cout << "terminal_core tests passed\n";
     return 0;
 }

@@ -5,6 +5,7 @@
  */
 
 #include "ssh_terminal.hpp"
+#include "host_key_policy.hpp"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -5431,28 +5432,17 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
     const std::string key_fingerprint = "SHA256:" + hex_encode(reinterpret_cast<const unsigned char *>(fingerprint), 32);
     const std::string host_name = host != nullptr ? host : "";
     const std::string key_type_name = host_key_type_name(key_type);
-    bool found = false;
-    bool matches = false;
+    pocketssh::HostKeyTrustState trust = pocketssh::HostKeyTrustState::Unknown;
     {
         std::string existing;
         // read_file_contents owns the mount on conventional targets and uses
         // the boot-time cache on T-Deck Plus, where the display shares SPI.
         (void)read_file_contents(kKnownHostsPath, &existing);
-        std::istringstream lines(existing);
-        std::string line;
-        while (std::getline(lines, line)) {
-            std::istringstream fields(line);
-            std::string known_host, known_port, known_type, known_key;
-            if (!(fields >> known_host >> known_port >> known_type >> known_key)) continue;
-            if (known_host == host_name && known_port == std::to_string(port)) {
-                found = true;
-                matches = known_type == key_type_name && known_key == key_material;
-                break;
-            }
-        }
+        trust = pocketssh::classify_known_host(existing, host_name, port, key_type_name, key_material);
     }
-    if (found && matches) return true;
-    if (!found && temporary_host_key_host == host_name && temporary_host_key_port == port) {
+    if (trust == pocketssh::HostKeyTrustState::Matching) return true;
+    if (trust == pocketssh::HostKeyTrustState::Unknown &&
+        temporary_host_key_host == host_name && temporary_host_key_port == port) {
         const bool temporary_matches = temporary_host_key_type == key_type_name &&
                                        temporary_host_key_material == key_material;
         temporary_host_key_host.clear();
@@ -5467,11 +5457,13 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         return false;
     }
     const std::string host_key_policy = lowercase_ascii(strict_host_key_checking);
+    const pocketssh::HostKeyPolicyAction policy_action =
+        pocketssh::host_key_policy_action(trust, host_key_policy);
     ESP_LOGW(TAG, "hostkey: %s:%d %s policy=%s", host_name.c_str(), port,
-             found ? "changed" : "unknown", host_key_policy.c_str());
+             trust == pocketssh::HostKeyTrustState::Changed ? "changed" : "unknown", host_key_policy.c_str());
     char notice[192];
     std::snprintf(notice, sizeof(notice), "hostkey: %s:%d %s %s\n", host_name.c_str(), port,
-                  found ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
+                  trust == pocketssh::HostKeyTrustState::Changed ? "CHANGED" : "UNKNOWN", key_fingerprint.c_str());
     append_text(notice);
     const auto set_pending = [&]() {
         pending_host_key_host = host_name;
@@ -5479,16 +5471,17 @@ bool SSHTerminal::verify_host_key(const char *host, int port, const std::string 
         pending_host_key_type = key_type_name;
         pending_host_key_material = key_material;
         pending_host_key_fingerprint = key_fingerprint;
-        pending_host_key_changed = found;
+        pending_host_key_changed = trust == pocketssh::HostKeyTrustState::Changed;
     };
-    if (found) {
+    if (policy_action == pocketssh::HostKeyPolicyAction::Reject &&
+        trust == pocketssh::HostKeyTrustState::Changed) {
         set_pending();
         append_text("ERROR: changed host key rejected. Review it, then use 'hostkey replace'.\n");
-    } else if (host_key_policy == "yes") {
+    } else if (policy_action == pocketssh::HostKeyPolicyAction::Reject) {
         append_text("ERROR: StrictHostKeyChecking=yes rejects unknown host keys.\n");
     } else {
         set_pending();
-        if (host_key_policy == "no") {
+        if (policy_action == pocketssh::HostKeyPolicyAction::Allow) {
             // Match the explicitly permissive policy without silently
             // creating durable trust. A later connection validates again.
             pending_host_key_host.clear();
