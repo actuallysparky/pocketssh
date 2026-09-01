@@ -1887,9 +1887,15 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     }
 
     if (std::rename(partial_path.c_str(), target_path.c_str()) != 0) {
-        terminal->append_text("serialrx: atomic install failed\n");
-        ESP_LOGE(TAG, "serialrx rename failed %s -> %s errno=%d", partial_path.c_str(), target_path.c_str(), errno);
-        return false;
+        // FAT does not replace an existing destination on rename. The new
+        // payload has already passed the complete size/CRC gate, so replace
+        // only the prior PocketSSH sidecar and retry the install.
+        if (errno != EEXIST || std::remove(target_path.c_str()) != 0 ||
+            std::rename(partial_path.c_str(), target_path.c_str()) != 0) {
+            terminal->append_text("serialrx: install failed\n");
+            ESP_LOGE(TAG, "serialrx rename failed %s -> %s errno=%d", partial_path.c_str(), target_path.c_str(), errno);
+            return false;
+        }
     }
 
     terminal->append_text("serialrx: transfer complete\n");
