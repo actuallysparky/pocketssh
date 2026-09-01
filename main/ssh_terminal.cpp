@@ -1442,16 +1442,44 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
     }
     line_out->clear();
 
+#if defined(TDECKPLUS_TARGET)
+    // USB-JTAG traffic arrives in short FIFO bursts. Draining one byte per
+    // loop made multi-megabyte Launcher sidecar staging impractical. Preserve
+    // bytes after each newline so bulk reads cannot lose adjacent DATA frames.
+    static std::string pending_bytes;
+    static std::string partial_line;
+#endif
+
     const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
 
     while (esp_timer_get_time() < deadline_us) {
 #if defined(TDECKPLUS_TARGET)
-        uint8_t byte = 0;
-        if (usb_serial_jtag_ll_read_rxfifo(&byte, 1) == 0) {
+        const size_t newline = pending_bytes.find('\n');
+        if (newline != std::string::npos) {
+            for (size_t index = 0; index < newline; ++index) {
+                const char ch = pending_bytes[index];
+                if (ch != '\r' && partial_line.size() < 2048) partial_line.push_back(ch);
+            }
+            pending_bytes.erase(0, newline + 1);
+            *line_out = std::move(partial_line);
+            partial_line.clear();
+            return true;
+        }
+        if (!pending_bytes.empty()) {
+            for (const char ch : pending_bytes) {
+                if (ch != '\r' && partial_line.size() < 2048) partial_line.push_back(ch);
+            }
+            pending_bytes.clear();
+        }
+
+        uint8_t bytes[256] = {};
+        const uint32_t available = usb_serial_jtag_ll_read_rxfifo(bytes, sizeof(bytes));
+        if (available == 0) {
             vTaskDelay(pdMS_TO_TICKS(2));
             continue;
         }
-        const char ch = static_cast<char>(byte);
+        pending_bytes.append(reinterpret_cast<const char *>(bytes), available);
+        continue;
 #else
         const int stdin_fd = fileno(stdin);
         if (stdin_fd < 0) {
@@ -1475,7 +1503,6 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
         if (n <= 0) {
             continue;
         }
-#endif
         if (ch == '\r') {
             continue;
         }
@@ -1485,7 +1512,12 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
         if (line_out->size() < 2048) {
             line_out->push_back(ch);
         }
+#endif
     }
+#if defined(TDECKPLUS_TARGET)
+    pending_bytes.clear();
+    partial_line.clear();
+#endif
     return false;
 }
 
