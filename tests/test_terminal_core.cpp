@@ -5,6 +5,11 @@
 #include <iostream>
 
 using pocketssh::CellStyleBold;
+using pocketssh::CellStyleConceal;
+using pocketssh::CellStyleDim;
+using pocketssh::CellStyleInverse;
+using pocketssh::CellStyleStrike;
+using pocketssh::CellStyleUnderline;
 using pocketssh::KeyCode;
 using pocketssh::KeyEvent;
 using pocketssh::TerminalCore;
@@ -116,6 +121,27 @@ void test_truecolor_and_utf8_streaming()
     assert(term.row(0)[3].codepoint == 0x2603);
 }
 
+void test_visible_sgr_attribute_combinations()
+{
+    TerminalCore term(12, 2, 8);
+    const char stream[] = "\x1b[2;4;7;8;9;38;5;201;48;5;22mX\x1b[0mY";
+    feed_bytewise(term, stream);
+    const auto &styled = term.row(0)[0];
+    assert(styled.codepoint == 'X');
+    assert(styled.foreground == 201);
+    assert(styled.background == 22);
+    assert((styled.style & CellStyleDim) != 0);
+    assert((styled.style & CellStyleUnderline) != 0);
+    assert((styled.style & CellStyleInverse) != 0);
+    assert((styled.style & CellStyleConceal) != 0);
+    assert((styled.style & CellStyleStrike) != 0);
+    const auto &reset = term.row(0)[1];
+    assert(reset.codepoint == 'Y');
+    assert(reset.foreground == pocketssh::kTerminalDefaultColor);
+    assert(reset.background == pocketssh::kTerminalDefaultColor);
+    assert(reset.style == pocketssh::CellStyleNone);
+}
+
 void test_scrollback_viewport_and_limit()
 {
     TerminalCore term(4, 2, 2);
@@ -211,6 +237,7 @@ int main()
     test_alternate_screen_and_modes();
     test_scroll_and_key_encoding();
     test_truecolor_and_utf8_streaming();
+    test_visible_sgr_attribute_combinations();
     test_scrollback_viewport_and_limit();
     test_external_scrollback_storage_ring();
     test_utf8_replacement_and_viewport_copy();
