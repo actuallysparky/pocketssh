@@ -34,7 +34,12 @@ constexpr uint16_t kDisplayHRes = 480;
 constexpr uint16_t kDisplayVRes = 222;
 constexpr uint16_t kDisplayGapX = 0;
 constexpr uint16_t kDisplayGapY = 49;
-constexpr uint16_t kBufferLines = 40;
+// The ST7796 is driven asynchronously by the LVGL port.  Keep one small DMA
+// stripe in flight while the Pager target is being brought up: the board's
+// display shares its SPI host with no other client, but a deep queue plus two
+// partial framebuffers can leave the LVGL mutex held if a transfer completion
+// is missed during early boot.
+constexpr uint16_t kBufferLines = 20;
 
 void set_label_text(lv_obj_t *label, const char *text)
 {
@@ -87,7 +92,7 @@ esp_err_t init_panel(DiagDisplay *display)
         .dc_gpio_num = kDisplayDc,
         .spi_mode = 0,
         .pclk_hz = kDisplayPclkHz,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 1,
         .on_color_trans_done = nullptr,
         .user_ctx = nullptr,
         .lcd_cmd_bits = 8,
@@ -139,7 +144,7 @@ esp_err_t init_lvgl(DiagDisplay *display)
     disp_cfg.io_handle = display->io_handle;
     disp_cfg.panel_handle = display->panel_handle;
     disp_cfg.buffer_size = kDisplayHRes * kBufferLines;
-    disp_cfg.double_buffer = true;
+    disp_cfg.double_buffer = false;
     disp_cfg.hres = kDisplayHRes;
     disp_cfg.vres = kDisplayVRes;
     disp_cfg.monochrome = false;
