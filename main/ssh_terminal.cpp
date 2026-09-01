@@ -5686,11 +5686,24 @@ esp_err_t SSHTerminal::ssh_open_channel()
         return ESP_FAIL;
     }
 
+    // Prepare the hidden remote canvas now.  The local transcript remains
+    // visible through authentication, but the first PTY request must use the
+    // same full-screen geometry that becomes visible after it succeeds.
+    if (terminal_grid != nullptr && terminal_screen != nullptr && display_lock(200)) {
+        const int height = std::max(1, static_cast<int>(lv_obj_get_content_height(terminal_screen)) - 25);
+        lv_obj_set_size(terminal_grid, lv_pct(100), height);
+        lv_obj_align(terminal_grid, LV_ALIGN_TOP_MID, 0, 25);
+        lv_obj_set_style_border_width(terminal_grid, 0, 0);
+        lv_obj_set_style_pad_all(terminal_grid, 0, 0);
+        display_unlock();
+    }
     sync_terminal_geometry(false);
     const int columns = static_cast<int>(terminal_core.columns());
     const int rows = static_cast<int>(terminal_core.rows());
-    const int width_px = terminal_output ? lv_obj_get_width(terminal_output) : 0;
-    const int height_px = terminal_output ? lv_obj_get_height(terminal_output) : 0;
+    const int width_px = terminal_grid ? lv_obj_get_content_width(terminal_grid) : 0;
+    const int height_px = terminal_grid ? lv_obj_get_content_height(terminal_grid) : 0;
+    ESP_LOGW(TAG, "ssh channel: request PTY term=xterm-256color cols=%d rows=%d px=%dx%d",
+             columns, rows, width_px, height_px);
     while ((rc = libssh2_channel_request_pty_ex(channel, "xterm-256color",
                                                   strlen("xterm-256color"),
                                                   NULL, 0, columns, rows,
@@ -6236,7 +6249,11 @@ void SSHTerminal::sync_terminal_geometry(bool notify_remote)
     // Derive the advertised terminal size from the actual display content area
     // and fixed-cell font metrics; never advertise stale hard-coded geometry.
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-    const lv_obj_t *surface = ssh_connected && terminal_grid != nullptr ? terminal_grid : terminal_output;
+    // A channel is not marked connected until after its PTY request, but that
+    // first request must describe the full remote canvas, not the local
+    // command transcript.
+    const lv_obj_t *surface = terminal_grid != nullptr && (ssh_connected || channel != nullptr)
+        ? terminal_grid : terminal_output;
     const int cell_width = terminal_cell_width(font, terminal_font_big);
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
     const int content_width = surface ? lv_obj_get_content_width(surface) : cell_width * (terminal_font_big ? 53 : 67);
