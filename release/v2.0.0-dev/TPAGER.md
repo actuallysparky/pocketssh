@@ -32,6 +32,10 @@ and `CONFIG_SPIRAM_TYPE_ESPPSRAM64=y`. The T-Deck Plus profile is kept
 separate and continues to select octal PSRAM. Do not reuse a build directory
 between the targets.
 
+The Pager profile also makes its native USB Serial/JTAG interface the primary
+console. This keeps boot and PSRAM diagnostics on the registered USB cable;
+the T-Deck Plus UART console selection is unaffected.
+
 Package the resulting app with `misc/package_tpager_bin.sh`. The established
 T-Pager package and SD-sidecar filename remains `PocketSSH-TPager.bin`.
 
