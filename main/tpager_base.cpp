@@ -136,6 +136,25 @@ void emit_usb_boot_trace()
     usb_serial_jtag_ll_txfifo_flush();
 }
 
+// Keep control-test responses on the native USB FIFO rather than the normal
+// console VFS. The latter is intermittently write-only on this hardware, so
+// this gives an unambiguous, credential-free worker-liveness signal during
+// Pager bring-up.
+void emit_usb_control_trace(const char *state, unsigned stack_free_bytes = 0)
+{
+    if (state == nullptr || !usb_serial_jtag_ll_txfifo_writable()) {
+        return;
+    }
+    char line[64] = {};
+    const int len = std::snprintf(line, sizeof(line), "PAGER_CTL %s %uB\n", state, stack_free_bytes);
+    if (len <= 0) {
+        return;
+    }
+    const size_t bytes = std::min<size_t>(static_cast<size_t>(len), sizeof(line) - 1);
+    (void)usb_serial_jtag_ll_write_txfifo(reinterpret_cast<const uint8_t *>(line), bytes);
+    usb_serial_jtag_ll_txfifo_flush();
+}
+
 void boot_trace_task(void *)
 {
     while (g_boot_stage < 100) {
@@ -262,6 +281,7 @@ void serial_command_task(void *arg)
     std::string line = std::move(request->line);
     delete request;
 
+    emit_usb_control_trace("start");
     if (g_terminal != nullptr && !line.empty()) {
         // This is intentionally the same public entry point as automated
         // terminal control on the T-Deck. It dispatches a complete command
@@ -271,8 +291,10 @@ void serial_command_task(void *arg)
     }
 
     const UBaseType_t remaining_words = uxTaskGetStackHighWaterMark(nullptr);
+    const unsigned remaining_bytes = static_cast<unsigned>(remaining_words * sizeof(StackType_t));
     ESP_LOGI(kTag, "serial command complete; stack free=%u B",
-             static_cast<unsigned>(remaining_words * sizeof(StackType_t)));
+             remaining_bytes);
+    emit_usb_control_trace("done", remaining_bytes);
     vTaskDelete(nullptr);
 }
 
@@ -315,6 +337,7 @@ void handle_serial_control_line(const std::string &raw_line)
 
     if (payload == "ping") {
         ESP_LOGI(kTag, "POCKETCTL pong");
+        emit_usb_control_trace("pong");
         return;
     }
 
