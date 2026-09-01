@@ -1611,7 +1611,8 @@ bool write_serial_partial_metadata(const std::string &metadata_path, size_t expe
     if (file == nullptr) return false;
     const int written = std::fprintf(file, "%u %08" PRIx32 "\n",
                                      static_cast<unsigned>(expected_size), expected_crc);
-    const bool ok = written > 0 && std::fflush(file) == 0 && fsync(fileno(file)) == 0;
+    const bool ok = written > 0 && std::fflush(file) == 0;
+    (void)fsync(fileno(file)); // FAT/VFS may not implement fsync; fflush is required.
     std::fclose(file);
     if (!ok || std::rename(temporary.c_str(), metadata_path.c_str()) != 0) {
         std::remove(temporary.c_str());
@@ -1865,7 +1866,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         // progress while the stream is active so a host timeout can resume
         // safely instead of discarding the whole segment.
         if (received - last_persisted >= 16 * 1024) {
-            if (std::fflush(out) != 0 || fsync(fileno(out)) != 0) {
+            if (std::fflush(out) != 0) {
                 terminal->append_text("serialrx: partial sync failure\n");
                 std::fclose(out);
                 ESP_LOGE(TAG, "serialrx partial sync failed path=%s", partial_path.c_str());
@@ -1903,7 +1904,8 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         return false;
     }
 
-    const bool flushed = std::fflush(out) == 0 && fsync(fileno(out)) == 0;
+    const bool flushed = std::fflush(out) == 0;
+    (void)fsync(fileno(out));
     std::fclose(out);
 
     size_t completed_size = 0;
