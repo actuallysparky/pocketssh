@@ -3338,11 +3338,13 @@ SSHTerminal::SSHTerminal()
       byte_counter_label(NULL),
       side_panel(NULL),
       side_panel_title(NULL),
+      terminal_notice(NULL),
       side_panel_page(0),
       cursor_pos(0),
       bytes_received(0),
       history_index(-1),
       cursor_blink_timer(NULL),
+      terminal_notice_timer(NULL),
       cursor_visible(true),
       battery_update_timer(NULL),
       debug_metrics_timer(NULL),
@@ -3434,6 +3436,9 @@ SSHTerminal::~SSHTerminal()
     }
     if (cursor_blink_timer) {
         lv_timer_del(cursor_blink_timer);
+    }
+    if (terminal_notice_timer) {
+        lv_timer_del(terminal_notice_timer);
     }
     if (battery_update_timer) {
         lv_timer_del(battery_update_timer);
@@ -3850,6 +3855,22 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_event_cb(terminal_grid, terminal_grid_draw_event_cb, LV_EVENT_DRAW_MAIN, this);
     lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
 
+    // SSH-mode notices must be visible over the fixed-cell canvas; writing
+    // these messages to the retained local textarea hides them from the user.
+    terminal_notice = lv_label_create(terminal_screen);
+    lv_label_set_long_mode(terminal_notice, LV_LABEL_LONG_CLIP);
+    lv_obj_set_size(terminal_notice, lv_pct(82), LV_SIZE_CONTENT);
+    lv_obj_set_style_text_color(terminal_notice, lv_color_hex(theme_color_hex), 0);
+    lv_obj_set_style_text_font(terminal_notice, ui_font_small(), 0);
+    lv_obj_set_style_bg_color(terminal_notice, lv_color_hex(0x101511), 0);
+    lv_obj_set_style_bg_opa(terminal_notice, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(terminal_notice, lv_color_hex(theme_color_hex), 0);
+    lv_obj_set_style_border_width(terminal_notice, 1, 0);
+    lv_obj_set_style_pad_hor(terminal_notice, 4, 0);
+    lv_obj_set_style_pad_ver(terminal_notice, 2, 0);
+    lv_obj_align(terminal_notice, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_add_flag(terminal_notice, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_t* input_container = lv_obj_create(terminal_screen);
     #if defined(TPAGER_TARGET)
     lv_obj_set_size(input_container, lv_pct(100) - (kTPagerHorizontalInsetPx * 2), 22);
@@ -3889,6 +3910,8 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_clear_flag(terminal_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
     
     cursor_blink_timer = lv_timer_create(cursor_blink_cb, 500, this);
+    terminal_notice_timer = lv_timer_create(terminal_notice_timer_cb, 2200, this);
+    lv_timer_pause(terminal_notice_timer);
     
     battery_update_timer = lv_timer_create(battery_update_cb, 60000, this);
     debug_metrics_timer = lv_timer_create(debug_metrics_cb, 1000, this);
@@ -4535,6 +4558,11 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
                 terminal->terminal_grid_selection_active = false;
                 ESP_LOGW(TAG, "copy: selection saved (%u byte(s))%s",
                          static_cast<unsigned>(terminal->device_clipboard.size()), truncated ? " truncated" : "");
+                char notice[72];
+                std::snprintf(notice, sizeof(notice), "Copied %u B%s",
+                              static_cast<unsigned>(terminal->device_clipboard.size()),
+                              truncated ? " (truncated)" : "");
+                terminal->show_terminal_notice(notice);
                 lv_obj_invalidate(target);
             }
             terminal->terminal_grid_touch_scroll_active = false;
@@ -4773,6 +4801,15 @@ void SSHTerminal::cursor_blink_cb(lv_timer_t* timer)
         terminal->cursor_visible = !terminal->cursor_visible;
         terminal->update_input_display();
     }
+}
+
+void SSHTerminal::terminal_notice_timer_cb(lv_timer_t* timer)
+{
+    SSHTerminal* terminal = static_cast<SSHTerminal*>(lv_timer_get_user_data(timer));
+    if (terminal != nullptr && terminal->terminal_notice != nullptr) {
+        lv_obj_add_flag(terminal->terminal_notice, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_timer_pause(timer);
 }
 
 void SSHTerminal::battery_update_cb(lv_timer_t* timer)
@@ -5848,10 +5885,24 @@ void SSHTerminal::copy_visible_terminal()
     const bool truncated = copied.size() > kClipboardLimit;
     if (truncated) copied.resize(kClipboardLimit);
     device_clipboard = std::move(copied);
-    char line[64];
-    std::snprintf(line, sizeof(line), "copy: %u byte(s) in device clipboard%s\n",
+    char notice[72];
+    std::snprintf(notice, sizeof(notice), "Copied %u B%s",
                   static_cast<unsigned>(device_clipboard.size()), truncated ? " (truncated)" : "");
-    append_text(line);
+    show_terminal_notice(notice);
+}
+
+void SSHTerminal::show_terminal_notice(const char* text)
+{
+    if (terminal_notice == nullptr || text == nullptr || text[0] == '\0') {
+        return;
+    }
+    lv_label_set_text(terminal_notice, text);
+    lv_obj_clear_flag(terminal_notice, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(terminal_notice);
+    if (terminal_notice_timer != nullptr) {
+        lv_timer_reset(terminal_notice_timer);
+        lv_timer_resume(terminal_notice_timer);
+    }
 }
 
 void SSHTerminal::paste_device_clipboard()

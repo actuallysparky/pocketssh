@@ -78,7 +78,7 @@ private:
     lv_obj_t* terminal_screen;
     lv_obj_t* terminal_output;
     // The local prompt retains the lightweight textarea.  SSH output uses a
-    // fixed-cell span grid so SGR foreground colors and decorations are
+    // fixed-cell canvas so SGR foreground colors and decorations are
     // rendered without flattening the terminal core into plain text.
     lv_obj_t* terminal_grid;
     std::vector<lv_obj_t*> terminal_grid_rows;
@@ -87,6 +87,7 @@ private:
     lv_obj_t* byte_counter_label;
     lv_obj_t* side_panel;
     lv_obj_t* side_panel_title;
+    lv_obj_t* terminal_notice;
     // The overlay deliberately reuses these objects across pages.  The
     // T-Deck can boot without usable PSRAM, so adding a button per F-key is
     // needlessly risky during startup.
@@ -100,6 +101,7 @@ private:
     int history_index;
     
     lv_timer_t* cursor_blink_timer;
+    lv_timer_t* terminal_notice_timer;
     bool cursor_visible;
     
     lv_timer_t* battery_update_timer;
@@ -197,6 +199,7 @@ private:
     bool save_pending_host_key();
     void copy_visible_terminal();
     void paste_device_clipboard();
+    void show_terminal_notice(const char* text);
     
     void load_history_from_nvs();
     void save_history_to_nvs();
@@ -213,6 +216,7 @@ private:
     static void terminal_grid_draw_event_cb(lv_event_t* e);
     static void restore_output_scroll_async(void *user_data);
     static void cursor_blink_cb(lv_timer_t* timer);
+    static void terminal_notice_timer_cb(lv_timer_t* timer);
     static void battery_update_cb(lv_timer_t* timer);
     static void debug_metrics_cb(lv_timer_t* timer);
     static void history_save_cb(lv_timer_t* timer);
