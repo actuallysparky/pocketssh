@@ -4793,6 +4793,7 @@ void SSHTerminal::run_control_command(const std::string &line)
             append_text("serialrx unavailable during active SSH session\n");
             return;
         }
+        bytes_received = 0;
         send_terminal_bytes(line);
         send_terminal_bytes(terminal_core.encode_key({pocketssh::KeyCode::Enter}));
         return;
@@ -6431,6 +6432,13 @@ std::string SSHTerminal::strip_ansi_codes(const char* data, size_t len)
 
 void SSHTerminal::process_received_data(const char* data, size_t len)
 {
+#if defined(TPAGER_TARGET)
+    // Keep production serial diagnostics content-free, while still proving
+    // that the active SSH channel delivered bytes to the terminal renderer.
+    if (bytes_received == 0 && len > 0) {
+        ESP_LOGI(TAG, "ssh rx: remote data received");
+    }
+#endif
     bytes_received += len;
     terminal_core.feed(data, len);
     
