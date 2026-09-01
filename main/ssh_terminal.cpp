@@ -1593,34 +1593,6 @@ bool file_size_and_crc32(const std::string &path, size_t *size_out, uint32_t *cr
     return true;
 }
 
-bool serial_partial_metadata_matches(const std::string &metadata_path, size_t expected_size, uint32_t expected_crc)
-{
-    FILE *file = std::fopen(metadata_path.c_str(), "r");
-    if (file == nullptr) return false;
-    unsigned long stored_size = 0;
-    unsigned long stored_crc = 0;
-    const int scanned = std::fscanf(file, "%lu %lx", &stored_size, &stored_crc);
-    std::fclose(file);
-    return scanned == 2 && stored_size == expected_size && stored_crc == expected_crc;
-}
-
-bool write_serial_partial_metadata(const std::string &metadata_path, size_t expected_size, uint32_t expected_crc)
-{
-    const std::string temporary = metadata_path + ".tmp";
-    FILE *file = std::fopen(temporary.c_str(), "w");
-    if (file == nullptr) return false;
-    const int written = std::fprintf(file, "%u %08" PRIx32 "\n",
-                                     static_cast<unsigned>(expected_size), expected_crc);
-    const bool ok = written > 0 && std::fflush(file) == 0;
-    (void)fsync(fileno(file)); // FAT/VFS may not implement fsync; fflush is required.
-    std::fclose(file);
-    if (!ok || std::rename(temporary.c_str(), metadata_path.c_str()) != 0) {
-        std::remove(temporary.c_str());
-        return false;
-    }
-    return true;
-}
-
 bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
 {
     if (terminal == nullptr || !valid_serial_target_name(target_name)) {
@@ -1720,7 +1692,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
 
     const std::string target_path = std::string(root_dir) + "/" + target_name;
     const std::string partial_path = target_path + ".partial";
-    const std::string metadata_path = partial_path + ".meta";
     struct stat partial_stat = {};
     size_t partial_size = (stat(partial_path.c_str(), &partial_stat) == 0 && S_ISREG(partial_stat.st_mode))
         ? static_cast<size_t>(partial_stat.st_size) : 0;
@@ -1762,16 +1733,9 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         return false;
     }
 
-    if (!serial_partial_metadata_matches(metadata_path, expected_size, expected_crc)) {
+    if (partial_size > expected_size) {
         std::remove(partial_path.c_str());
-        std::remove(metadata_path.c_str());
         partial_size = 0;
-        if (!write_serial_partial_metadata(metadata_path, expected_size, expected_crc)) {
-            terminal->append_text("serialrx: failed to persist partial metadata\n");
-            ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=metadata path=%s errno=%d",
-                     metadata_path.c_str(), errno);
-            return false;
-        }
     }
     if (partial_size != static_cast<size_t>(expected_offset_u64)) {
         terminal->append_text("serialrx: resume offset mismatch\n");
@@ -1821,7 +1785,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             terminal->append_text("serialrx: aborted by host\n");
             std::fclose(out);
             std::remove(partial_path.c_str());
-            std::remove(metadata_path.c_str());
             return false;
         }
         if (cmd == "pause") {
@@ -1842,7 +1805,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=data-hex");
             std::fclose(out);
             std::remove(partial_path.c_str());
-            std::remove(metadata_path.c_str());
             return false;
         }
         if (chunk.empty()) {
@@ -1893,7 +1855,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         terminal->append_text("serialrx: missing END marker\n");
         std::fclose(out);
         std::remove(partial_path.c_str());
-        std::remove(metadata_path.c_str());
         return false;
     }
 
@@ -1902,7 +1863,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         terminal->append_text("serialrx: invalid END marker\n");
         std::fclose(out);
         std::remove(partial_path.c_str());
-        std::remove(metadata_path.c_str());
         return false;
     }
 
@@ -1918,7 +1878,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         ESP_LOGE(TAG, "serialrx verification failed expected_bytes=%u actual_bytes=%u expected_crc=%08" PRIx32 " actual_crc=%08" PRIx32,
                  static_cast<unsigned>(expected_size), static_cast<unsigned>(completed_size), expected_crc, completed_crc);
         std::remove(partial_path.c_str());
-        std::remove(metadata_path.c_str());
         return false;
     }
 
@@ -1927,7 +1886,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         ESP_LOGE(TAG, "serialrx rename failed %s -> %s errno=%d", partial_path.c_str(), target_path.c_str(), errno);
         return false;
     }
-    std::remove(metadata_path.c_str());
 
     terminal->append_text("serialrx: transfer complete\n");
     // Keep the sender's completion evidence visible at the T-Deck's normal
