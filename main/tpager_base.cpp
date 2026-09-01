@@ -614,6 +614,20 @@ bool initialize_terminal_ui_with_retry()
     return false;
 }
 
+void show_boot_psram_status()
+{
+    const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    void *probe = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char status[96] = {};
+    std::snprintf(status, sizeof(status), "PSRAM: %u KiB / %u KiB, probe=%s",
+                  static_cast<unsigned>(psram_free / 1024),
+                  static_cast<unsigned>(psram_total / 1024),
+                  probe != nullptr ? "PASS" : "FAIL");
+    heap_caps_free(probe);
+    tpager::diag_display_set_last_line(&g_display, status);
+}
+
 void boot_wifi_task(void *)
 {
     // Startup contract: defer auto-connect off app_main so input runtime starts
@@ -759,7 +773,7 @@ extern "C" void app_main(void)
     ret = tpager::diag_display_init(&g_display);
     if (ret == ESP_OK) {
         tpager::diag_display_set_stage(&g_display, "Stage: init I2C");
-        tpager::diag_display_set_last_line(&g_display, "Runtime booting");
+        show_boot_psram_status();
     }
 
     tpager::diag_display_set_stage(&g_display, "Stage: keyboard init");
