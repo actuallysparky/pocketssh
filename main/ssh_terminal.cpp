@@ -282,14 +282,17 @@ std::string terminal_cell_utf8(uint32_t codepoint)
 }
 
 constexpr uint32_t kTerminalBackground = 0x050806;
-constexpr uint32_t kTerminalPhosphorGreen = 0x70E87A;
+// Softer than the earlier neon green: still unmistakably terminal-like, but
+// comfortable for a handheld reflective LCD at normal brightness.
+constexpr uint32_t kTerminalPhosphorGreen = 0x86C9A1;
 
 int terminal_cell_width(const lv_font_t *font, bool big)
 {
-    // UNSCII has a nine-pixel line height already.  A one-pixel negative
-    // letter spacing makes its mostly 6-7px glyph shapes a dense, crisp 7px
-    // terminal pitch without fractional scaling or antialiasing.
-    return big ? std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M'))) : 7;
+    // A terminal grid must use the bitmap font's actual advance.  The former
+    // hard-coded seven-pixel compact pitch squeezed an eight-pixel UNSCII
+    // glyph into adjacent cells, producing the crowded/overlapping look.
+    (void)big;
+    return std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
 }
 
 uint32_t terminal_cell_foreground(const pocketssh::TerminalCell &cell, uint32_t theme)
@@ -3967,7 +3970,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     status_bar = lv_label_create(terminal_screen);
     lv_label_set_text(status_bar, "Status: Disconnected");
     lv_obj_set_style_text_color(status_bar, lv_color_hex(theme_color_hex), 0);
-    lv_obj_set_style_text_font(status_bar, ui_font_body(), 0);
+    lv_obj_set_style_text_font(status_bar, ui_font_small(), 0);
     #if defined(TPAGER_TARGET)
     lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 4, 2);
     #else
@@ -6733,25 +6736,25 @@ void SSHTerminal::rebuild_terminal_grid()
 void SSHTerminal::create_side_panel()
 {
     side_panel = lv_obj_create(terminal_screen);
-    lv_obj_set_size(side_panel, 100, lv_pct(100));
+    // Bottom quick-sheet: six readable controls at a time.  The former
+    // 15-button vertical rail was 560px tall on a 240px display and clipped
+    // most controls while obscuring the terminal.
+    lv_obj_set_size(side_panel, lv_pct(100), 58);
     lv_obj_set_style_bg_color(side_panel, lv_color_hex(0x101010), 0);
-    lv_obj_set_style_bg_opa(side_panel, LV_OPA_80, 0);
+    lv_obj_set_style_bg_opa(side_panel, LV_OPA_90, 0);
     lv_obj_set_style_border_color(side_panel, lv_color_hex(theme_color_hex), 0);
-    lv_obj_set_style_border_width(side_panel, 2, 0);
+    lv_obj_set_style_border_width(side_panel, 1, 0);
+    lv_obj_set_style_pad_all(side_panel, 0, 0);
     lv_obj_set_scrollbar_mode(side_panel, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scroll_dir(side_panel, LV_DIR_VER);
-    lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 100, 0);
+    lv_obj_clear_flag(side_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
     lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
-    
-    side_panel_title = lv_label_create(side_panel);
-    lv_obj_set_style_text_color(side_panel_title, lv_color_hex(theme_color_hex), 0);
-    lv_obj_set_style_text_font(side_panel_title, ui_font_body(), 0);
-    lv_obj_align(side_panel_title, LV_ALIGN_TOP_MID, 0, 5);
-    
-    auto create_key_button = [this](const char* label, const char* key_seq, int y_offset) {
+
+    auto create_key_button = [this](const char* label, const char* key_seq, int column, int row) {
         lv_obj_t* btn = lv_btn_create(side_panel);
-        lv_obj_set_size(btn, 85, 30);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, y_offset);
+        lv_obj_set_size(btn, 98, 24);
+        lv_obj_set_pos(btn, 5 + column * 106, 3 + row * 28);
+        lv_obj_set_style_radius(btn, 2, 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A1A), 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(theme_color_hex), LV_STATE_PRESSED);
         
@@ -6767,8 +6770,8 @@ void SSHTerminal::create_side_panel()
         side_panel_buttons.push_back(btn);
     };
 
-    for (int index = 0; index < 15; ++index) {
-        create_key_button("", "", 35 + (index * 35));
+    for (int index = 0; index < 6; ++index) {
+        create_key_button("", "", index % 3, index / 3);
     }
     populate_side_panel_page();
 }
@@ -6776,34 +6779,25 @@ void SSHTerminal::create_side_panel()
 void SSHTerminal::populate_side_panel_page()
 {
     struct OverlayKey { const char *label; const char *sequence; };
-    static constexpr OverlayKey kPages[][15] = {
-        {{"<-", "LEFT"}, {"->", "RIGHT"}, {"Line <", "HOME"}, {"> Line", "END"},
-         {"Ctrl+C", "\x03"}, {"Ctrl+Z", "\x1A"}, {"Ctrl+D", "\x04"}, {"Ctrl+L", "\x0C"},
-         {"Tab", "\t"}, {"Esc", "\x1B"}, {"Exit SSH", "EXIT"}, {"Clear", "CLEAR"},
-         {"Reconnect", "RECONNECT"}, {"Copy", "COPY"}, {"More keys", "PAGE"}},
-        {{"F1", "KEY:F1"}, {"F2", "KEY:F2"}, {"F3", "KEY:F3"}, {"F4", "KEY:F4"},
-         {"F5", "KEY:F5"}, {"F6", "KEY:F6"}, {"F7", "KEY:F7"}, {"F8", "KEY:F8"},
-         {"F9", "KEY:F9"}, {"F10", "KEY:F10"}, {"F11", "KEY:F11"}, {"F12", "KEY:F12"},
-         {"Page up", "KEY:PGUP"}, {"Page down", "KEY:PGDN"}, {"More keys", "PAGE"}},
-        {{"Insert", "KEY:INS"}, {"Delete", "KEY:DEL"}, {"Shift+Tab", "KEY:STAB"}, {"Paste", "PASTE"},
-         {"Basic keys", "PAGE"}, {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""},
-         {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""}},
-        {{"Older", "SCROLL:12"}, {"Live", "SCROLL:-512"}, {"Font compact", "FONT:COMPACT"}, {"Font large", "FONT:BIG"},
-         {"Status", "STATUS"}, {"Basic keys", "PAGE"}, {"", ""}, {"", ""}, {"", ""}, {"", ""},
-         {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""}},
+    static constexpr OverlayKey kPages[][6] = {
+        {{"Ctrl+C", "\x03"}, {"Ctrl+Z", "\x1A"}, {"Tab", "\t"},
+         {"Esc", "\x1B"}, {"Disconnect", "EXIT"}, {"More 1/7", "PAGE"}},
+        {{"Left", "LEFT"}, {"Right", "RIGHT"}, {"Home", "HOME"},
+         {"End", "END"}, {"Page up", "KEY:PGUP"}, {"More 2/7", "PAGE"}},
+        {{"Page down", "KEY:PGDN"}, {"Insert", "KEY:INS"}, {"Delete", "KEY:DEL"},
+         {"Shift+Tab", "KEY:STAB"}, {"Paste", "PASTE"}, {"More 3/7", "PAGE"}},
+        {{"F1", "KEY:F1"}, {"F2", "KEY:F2"}, {"F3", "KEY:F3"},
+         {"F4", "KEY:F4"}, {"F5", "KEY:F5"}, {"More 4/7", "PAGE"}},
+        {{"F6", "KEY:F6"}, {"F7", "KEY:F7"}, {"F8", "KEY:F8"},
+         {"F9", "KEY:F9"}, {"F10", "KEY:F10"}, {"More 5/7", "PAGE"}},
+        {{"F11", "KEY:F11"}, {"F12", "KEY:F12"}, {"Older", "SCROLL:12"},
+         {"Live", "SCROLL:-512"}, {"Copy", "COPY"}, {"More 6/7", "PAGE"}},
+        {{"Font compact", "FONT:COMPACT"}, {"Font large", "FONT:BIG"}, {"Reconnect", "RECONNECT"},
+         {"Clear", "CLEAR"}, {"Status", "STATUS"}, {"Basic keys", "PAGE"}},
     };
     constexpr size_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
     side_panel_page %= kPageCount;
-    if (side_panel_title != nullptr) {
-        char title[48];
-        const char *host = connected_ssh_host.empty() ? "SSH off" : connected_ssh_host.c_str();
-        std::snprintf(title, sizeof(title), "%.14s %ux%u\nKeys %u/%u", host,
-                      static_cast<unsigned>(terminal_core.columns()), static_cast<unsigned>(terminal_core.rows()),
-                      static_cast<unsigned>(side_panel_page + 1),
-                      static_cast<unsigned>(kPageCount));
-        lv_label_set_text(side_panel_title, title);
-    }
-    for (size_t index = 0; index < side_panel_buttons.size() && index < 15; ++index) {
+    for (size_t index = 0; index < side_panel_buttons.size() && index < 6; ++index) {
         lv_obj_t *button = side_panel_buttons[index];
         const OverlayKey &key = kPages[side_panel_page][index];
         lv_obj_t *label = lv_obj_get_child(button, 0);
@@ -6823,10 +6817,10 @@ void SSHTerminal::toggle_side_panel()
         // omission left every gesture path functional but the controls
         // permanently invisible.
         lv_obj_clear_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
     } else {
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 100, 0);
+        lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
     }
 }
 
@@ -6873,7 +6867,7 @@ void SSHTerminal::send_special_key(const char* sequence)
         return;
     }
     if (strcmp(sequence, "PAGE") == 0) {
-        side_panel_page = static_cast<uint8_t>((side_panel_page + 1) % 4);
+        side_panel_page = static_cast<uint8_t>((side_panel_page + 1) % 7);
         populate_side_panel_page();
         return;
     }
