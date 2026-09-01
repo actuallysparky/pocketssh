@@ -3548,8 +3548,10 @@ SSHTerminal::SSHTerminal()
       byte_counter_label(NULL),
       side_panel(NULL),
       side_panel_title(NULL),
+      server_panel(NULL),
       terminal_notice(NULL),
       side_panel_page(0),
+      server_panel_page(0),
       cursor_pos(0),
       bytes_received(0),
       history_index(-1),
@@ -4009,11 +4011,11 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_style_text_font(terminal_output, ui_font_terminal_compact(), 0);
     lv_obj_set_style_text_letter_space(terminal_output, -1, 0);
     lv_obj_set_style_border_color(terminal_output, lv_color_hex(theme_color_hex), 0);
-#if defined(TPAGER_TARGET)
-    lv_obj_set_style_border_width(terminal_output, 1, 0);
-#else
-    lv_obj_set_style_border_width(terminal_output, 2, 0);
-#endif
+    // The local command screen uses the titlebar as its visual boundary.
+    // Keeping this frameless avoids a distracting jump when SSH activates
+    // the already-frameless terminal grid.
+    lv_obj_set_style_border_width(terminal_output, 0, 0);
+    lv_obj_set_style_pad_all(terminal_output, 0, 0);
     lv_textarea_set_cursor_click_pos(terminal_output, false);
     lv_textarea_set_one_line(terminal_output, false);
     lv_label_set_recolor(lv_textarea_get_label(terminal_output), true);
@@ -4045,12 +4047,8 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_style_bg_color(terminal_grid, lv_color_hex(kTerminalBackground), 0);
     lv_obj_set_style_bg_opa(terminal_grid, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(terminal_grid, lv_color_hex(theme_color_hex), 0);
-#if defined(TPAGER_TARGET)
-    lv_obj_set_style_border_width(terminal_grid, 1, 0);
-#else
-    lv_obj_set_style_border_width(terminal_grid, 2, 0);
-#endif
-    lv_obj_set_style_pad_all(terminal_grid, 1, 0);
+    lv_obj_set_style_border_width(terminal_grid, 0, 0);
+    lv_obj_set_style_pad_all(terminal_grid, 0, 0);
     lv_obj_set_scrollbar_mode(terminal_grid, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_SCROLL_MOMENTUM);
     lv_obj_clear_flag(terminal_grid, LV_OBJ_FLAG_SCROLL_ELASTIC);
@@ -4115,6 +4113,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_event_cb(input_label, input_touch_event_cb, LV_EVENT_CLICKED, this);
 
     create_side_panel();
+    create_server_panel();
     
     lv_obj_add_event_cb(terminal_screen, gesture_event_cb, LV_EVENT_GESTURE, this);
     lv_obj_clear_flag(terminal_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -6451,6 +6450,9 @@ void SSHTerminal::apply_theme_colors()
     if (side_panel) {
         lv_obj_set_style_border_color(side_panel, theme, 0);
     }
+    if (server_panel) {
+        lv_obj_set_style_border_color(server_panel, theme, 0);
+    }
 }
 
 bool SSHTerminal::set_theme_color_by_name(const std::string &name, bool announce)
@@ -6728,8 +6730,8 @@ void SSHTerminal::set_ssh_terminal_layout(bool active)
     }
     lv_obj_set_size(terminal_output, lv_pct(100), lv_pct(75));
     lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
-    lv_obj_set_style_border_width(terminal_output, 2, 0);
-    lv_obj_set_style_pad_all(terminal_output, 1, 0);
+    lv_obj_set_style_border_width(terminal_output, 0, 0);
+    lv_obj_set_style_pad_all(terminal_output, 0, 0);
     if (terminal_grid != nullptr) lv_obj_add_flag(terminal_grid, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -6832,6 +6834,121 @@ void SSHTerminal::toggle_side_panel()
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_align(side_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
     }
+}
+
+void SSHTerminal::create_server_panel()
+{
+    server_panel = lv_obj_create(terminal_screen);
+    lv_obj_set_size(server_panel, lv_pct(100), 58);
+    lv_obj_set_style_bg_color(server_panel, lv_color_hex(0x101010), 0);
+    lv_obj_set_style_bg_opa(server_panel, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(server_panel, lv_color_hex(theme_color_hex), 0);
+    lv_obj_set_style_border_width(server_panel, 1, 0);
+    lv_obj_set_style_pad_all(server_panel, 0, 0);
+    lv_obj_set_scrollbar_mode(server_panel, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(server_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
+    lv_obj_add_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
+
+    server_panel_actions.assign(6, "");
+    for (int index = 0; index < 6; ++index) {
+        lv_obj_t* button = lv_btn_create(server_panel);
+        lv_obj_set_size(button, 98, 24);
+        lv_obj_set_pos(button, 5 + (index % 3) * 106, 3 + (index / 3) * 28);
+        lv_obj_set_style_radius(button, 2, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0x1A1A1A), 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(theme_color_hex), LV_STATE_PRESSED);
+        lv_obj_t* label = lv_label_create(button);
+        lv_obj_set_style_text_color(label, lv_color_hex(theme_color_hex), 0);
+        lv_obj_set_style_text_font(label, ui_font_small(), 0);
+        lv_obj_center(label);
+        lv_obj_add_event_cb(button, server_panel_event_cb, LV_EVENT_CLICKED, this);
+        server_panel_buttons.push_back(button);
+    }
+}
+
+void SSHTerminal::populate_server_panel()
+{
+    SSHConfigFile parsed = {};
+    std::vector<std::string> aliases;
+    if (parse_ssh_config_file(&parsed)) aliases = parsed.aliases;
+
+    constexpr size_t kAliasesPerPage = 5;
+    const size_t page_count = std::max<size_t>(1, (aliases.size() + kAliasesPerPage - 1) / kAliasesPerPage);
+    server_panel_page %= page_count;
+    const size_t first = static_cast<size_t>(server_panel_page) * kAliasesPerPage;
+
+    for (size_t index = 0; index < server_panel_buttons.size() && index < 6; ++index) {
+        lv_obj_t *button = server_panel_buttons[index];
+        lv_obj_t *label = lv_obj_get_child(button, 0);
+        server_panel_actions[index].clear();
+        bool enabled = true;
+        std::string text;
+        if (index < kAliasesPerPage && first + index < aliases.size()) {
+            text = aliases[first + index];
+            server_panel_actions[index] = text;
+        } else if (index == kAliasesPerPage && page_count > 1) {
+            char page_label[20];
+            std::snprintf(page_label, sizeof(page_label), "More %u/%u",
+                          static_cast<unsigned>(server_panel_page + 1),
+                          static_cast<unsigned>(page_count));
+            text = page_label;
+            server_panel_actions[index] = "PAGE";
+        } else if (aliases.empty() && index == 0) {
+            text = "No SSH hosts";
+            enabled = false;
+        } else {
+            text = "";
+            enabled = false;
+        }
+        if (label != nullptr) lv_label_set_text(label, text.c_str());
+        lv_obj_set_user_data(button, const_cast<char *>(server_panel_actions[index].c_str()));
+        if (enabled) lv_obj_clear_state(button, LV_STATE_DISABLED);
+        else lv_obj_add_state(button, LV_STATE_DISABLED);
+    }
+}
+
+void SSHTerminal::toggle_server_panel()
+{
+    if (!server_panel) return;
+    if (lv_obj_has_flag(server_panel, LV_OBJ_FLAG_HIDDEN)) {
+        populate_server_panel();
+        lv_obj_clear_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+    } else {
+        lv_obj_add_flag(server_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(server_panel, LV_ALIGN_BOTTOM_MID, 0, 58);
+    }
+}
+
+void SSHTerminal::connect_server_panel_alias(const char* alias)
+{
+    if (alias == nullptr || alias[0] == '\0') return;
+    const std::string requested(alias);
+    toggle_server_panel();
+    if (ssh_connected) {
+        if (requested == reconnect_alias) {
+            show_terminal_notice("Already connected");
+            return;
+        }
+        append_text("Switching SSH server...\n");
+        disconnect();
+    }
+    connect_using_ssh_alias(this, requested);
+}
+
+void SSHTerminal::server_panel_event_cb(lv_event_t* e)
+{
+    SSHTerminal* terminal = static_cast<SSHTerminal*>(lv_event_get_user_data(e));
+    lv_obj_t* button = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    if (terminal == nullptr || button == nullptr) return;
+    const char* action = static_cast<const char*>(lv_obj_get_user_data(button));
+    if (action != nullptr && std::strcmp(action, "PAGE") == 0) {
+        ++terminal->server_panel_page;
+        terminal->populate_server_panel();
+        return;
+    }
+    terminal->connect_server_panel_alias(action);
 }
 
 void SSHTerminal::toggle_special_keys_panel()
@@ -6960,13 +7077,19 @@ void SSHTerminal::gesture_event_cb(lv_event_t* e)
     
     if (dir == LV_DIR_LEFT) {
         ESP_LOGI(TAG, "Swipe left detected - showing special keys panel");
+        if (terminal->server_panel && !lv_obj_has_flag(terminal->server_panel, LV_OBJ_FLAG_HIDDEN)) {
+            terminal->toggle_server_panel();
+        }
         if (terminal->side_panel && lv_obj_has_flag(terminal->side_panel, LV_OBJ_FLAG_HIDDEN)) {
             terminal->toggle_side_panel();
         }
     } else if (dir == LV_DIR_RIGHT) {
-        ESP_LOGI(TAG, "Swipe right detected - hiding special keys panel");
+        ESP_LOGI(TAG, "Swipe right detected - showing configured SSH servers");
         if (terminal->side_panel && !lv_obj_has_flag(terminal->side_panel, LV_OBJ_FLAG_HIDDEN)) {
             terminal->toggle_side_panel();
+        }
+        if (terminal->server_panel && lv_obj_has_flag(terminal->server_panel, LV_OBJ_FLAG_HIDDEN)) {
+            terminal->toggle_server_panel();
         }
     }
 }

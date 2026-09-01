@@ -87,12 +87,16 @@ private:
     lv_obj_t* byte_counter_label;
     lv_obj_t* side_panel;
     lv_obj_t* side_panel_title;
+    lv_obj_t* server_panel;
     lv_obj_t* terminal_notice;
     // The overlay deliberately reuses these objects across pages.  The
     // T-Deck can boot without usable PSRAM, so adding a button per F-key is
     // needlessly risky during startup.
     std::vector<lv_obj_t*> side_panel_buttons;
     uint8_t side_panel_page;
+    std::vector<lv_obj_t*> server_panel_buttons;
+    std::vector<std::string> server_panel_actions;
+    uint8_t server_panel_page;
     
     std::string current_input;
     size_t cursor_pos;
@@ -209,8 +213,13 @@ private:
     void create_side_panel();
     void populate_side_panel_page();
     void toggle_side_panel();
+    void create_server_panel();
+    void populate_server_panel();
+    void toggle_server_panel();
+    void connect_server_panel_alias(const char* alias);
     static void gesture_event_cb(lv_event_t* e);
     static void special_key_event_cb(lv_event_t* e);
+    static void server_panel_event_cb(lv_event_t* e);
     static void input_touch_event_cb(lv_event_t* e);
     static void output_touch_event_cb(lv_event_t* e);
     static void terminal_grid_draw_event_cb(lv_event_t* e);
