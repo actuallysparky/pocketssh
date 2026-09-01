@@ -102,6 +102,31 @@ observed post-soak channel-health check.
 The current image still requires the direct changed-host-key and final
 visual-gesture acceptance checks before it can be called a final 2.0 release.
 
+## Terminal-layout and reliable-sidecar milestone (2026-08-31)
+
+Source revision `ecb9b67` corrects the T-Deck terminal grid to use the actual
+bitmap-font advance rather than forcing a seven-pixel compact pitch.  It also
+uses a calmer default phosphor color, a smaller status font, and replaces the
+clipped 15-button side rail with a two-row, six-control bottom quick sheet.
+
+The same change set hardens Launcher-safe sidecar delivery: failed receiver
+writes only discard `.partial`, pacing can be selected by the host sender, and
+each automated transfer session uses a fresh token so stale USB frames cannot
+be mistaken for its `BEGIN` record.
+
+- Package name: `PocketSSH-2.0.bin`
+- SHA-256: `8da4c8140568fe2571779ed316246504f84c5306e36981ba90d536fe23858045`
+- Size: `4,132,480` bytes; CRC32: `f94d80cf`
+- Host terminal-core tests, sender Python syntax validation, and the clean
+  T-Deck Plus ESP-IDF build passed. The app image remains 56% below the
+  smallest 9 MiB application partition limit.
+- The registered device `20:6e:f1:a5:59:30` was re-verified and flashed only
+  at Launcher-managed `app1` / `ota_0` (`0x200000`). No bootloader, partition
+  table, factory app, NVS, Launcher region, or unrelated SD ROM was written.
+- Independent device readback reports `/sdcard/PocketSSH-2.0.bin` at exactly
+  `4,132,480` bytes and CRC32 `f94d80cf`, matching the package. The previous
+  sidecar remained intact until that final CRC-gated promotion succeeded.
+
 ## Host-key policy test milestone (2026-08-31)
 
 Source revision `9077c47` moves known-host classification and policy choice
