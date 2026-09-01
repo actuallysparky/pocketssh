@@ -1797,6 +1797,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             terminal->append_text("serialrx: aborted by host\n");
             std::fclose(out);
             std::remove(partial_path.c_str());
+            ESP_LOGW(TAG, "POCKETCTL serialrx_aborted path=%s", partial_path.c_str());
             return false;
         }
         if (cmd == "pause") {

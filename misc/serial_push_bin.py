@@ -175,7 +175,7 @@ def wait_for_abort(ser: serial.Serial, timeout_s: float) -> bool:
         window = (window + text).lower()
         if len(window) > 4096:
             window = window[-4096:]
-        if "serialrx: aborted by host" in window:
+        if "pocketctl serialrx_aborted" in window:
             return True
     return False
 
