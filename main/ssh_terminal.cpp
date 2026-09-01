@@ -386,6 +386,19 @@ class ScopedSDMount {
 public:
     ScopedSDMount()
     {
+        // The T-Pager LCD and SD card are separate SPI devices on the same
+        // host.  The LCD uses asynchronous DMA, so FAT reads must exclude a
+        // pending LVGL refresh rather than merely relying on the SPI driver's
+        // per-device queue.  Without this gate an ssh_config/key read during
+        // a visible connection update can corrupt the LCD completion queue.
+        display_locked_ = display_lock(1000);
+        if (!display_locked_) {
+            last_err_ = ESP_ERR_TIMEOUT;
+            ESP_LOGW(TAG, "T-Pager SD: display lock timeout before SD access");
+            ok_ = false;
+            return;
+        }
+
         const bool was_mounted = tpager::sd_is_mounted();
         tpager::SdDiagStats stats = {};
         const esp_err_t ret = tpager::sd_mount_and_scan_keys(&stats);
@@ -414,8 +427,12 @@ public:
 
     ~ScopedSDMount()
     {
-        // Runtime contract: keep SD mounted once acquired to avoid launcher/app
-        // transition races and repeated SDSPI remount timeouts.
+        // Keep the SD mount itself across runtime accesses, but always release
+        // the display/SPI exclusion acquired for this filesystem transaction.
+        if (display_locked_) {
+            display_unlock();
+            display_locked_ = false;
+        }
     }
 
     bool ok() const { return ok_; }
@@ -424,6 +441,7 @@ public:
 private:
     bool ok_ = true;
     bool mounted_ = false;
+    bool display_locked_ = false;
     esp_err_t last_err_ = ESP_OK;
 };
 #else
