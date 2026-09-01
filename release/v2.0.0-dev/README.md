@@ -101,3 +101,28 @@ observed post-soak channel-health check.
 
 The current image still requires the direct changed-host-key and final
 visual-gesture acceptance checks before it can be called a final 2.0 release.
+
+## Host-key policy test milestone (2026-08-31)
+
+Source revision `9077c47` moves known-host classification and policy choice
+into the dependency-free `host_key_policy.hpp` helper that firmware uses.
+Host-native tests prove these decision paths without altering a real server:
+
+- a matching host/port/type/key record allows connection;
+- a changed key rejects even under `StrictHostKeyChecking=no`;
+- an unknown key rejects under `yes`, prompts under `ask`, and accepts only
+  once under the explicitly permissive `no` policy.
+
+The clean T-Deck Plus build passed and produced this current artifact:
+
+- Package name: `PocketSSH-2.0.bin`
+- SHA-256: `7fdb759ba788d1c3140b5e4b2eca1229fe06bcd425fc8e61595da7063ef3d079`
+- Size: `4,132,640` bytes; CRC32: `9a338ab0`
+- The registered device was re-verified and flashed only at `app1` / `ota_0`
+  (`0x200000`, size `0x800000`). Image size is `0x3f0f20`, leaving 56% free.
+- Firmware-side SD completion reports `/sdcard/PocketSSH-2.0.bin` at exactly
+  `4,132,640` bytes and CRC32 `9a338ab0`; the existing SD ROM was not written.
+- The exact image authenticated to `prodmini`, opened its `xterm-256color`
+  45x20 shell, and completed the agreed ten-minute untouched active-session
+  soak. As with prior soak evidence, the USB-JTAG serial link was not probed
+  during the interval because opening it resets the target.
