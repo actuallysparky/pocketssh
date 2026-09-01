@@ -585,11 +585,16 @@ void poll_encoder()
             g_encoder_center_held = true;
             g_encoder_center_hold_fired = false;
             g_encoder_center_press_tick = xTaskGetTickCount();
-            handle_terminal_key('\n');
         } else {
+            const bool submit_short_press = g_encoder_center_held && !g_encoder_center_hold_fired;
             g_encoder_center_held = false;
             g_encoder_center_hold_fired = false;
             g_encoder_center_press_tick = 0;
+            // Selecting on release lets a two-second center hold shut down
+            // the device without also transmitting an Enter to the terminal.
+            if (submit_short_press) {
+                handle_terminal_key('\n');
+            }
         }
     }
 
