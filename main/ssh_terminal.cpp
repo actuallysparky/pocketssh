@@ -1849,6 +1849,11 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
                           static_cast<unsigned>(expected_size));
             terminal->append_text(linebuf);
         }
+#if defined(TDECKPLUS_TARGET)
+        // serialrx runs on the USB control task. Yield between frames so a
+        // sustained host transfer cannot starve IDLE0 and trip the task WDT.
+        vTaskDelay(pdMS_TO_TICKS(1));
+#endif
     }
 
     if (!serial_read_line_with_timeout(5000, &line)) {
