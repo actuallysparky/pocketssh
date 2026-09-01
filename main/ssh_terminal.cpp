@@ -280,11 +280,6 @@ std::string terminal_cell_utf8(uint32_t codepoint)
     return std::string(1, static_cast<char>(codepoint));
 }
 
-bool same_terminal_style(const pocketssh::TerminalCell &left, const pocketssh::TerminalCell &right)
-{
-    return left.foreground == right.foreground && left.background == right.background && left.style == right.style;
-}
-
 constexpr uint32_t kTerminalBackground = 0x050806;
 constexpr uint32_t kTerminalPhosphorGreen = 0x70E87A;
 
@@ -6467,64 +6462,6 @@ void SSHTerminal::rebuild_terminal_grid()
     lv_obj_clean(terminal_grid);
     terminal_grid_rows.clear();
     lv_obj_invalidate(terminal_grid);
-}
-
-void SSHTerminal::render_terminal_grid_row(size_t row_index)
-{
-    if (row_index >= terminal_grid_rows.size()) return;
-    // Spans are descriptors rather than child objects, so deleting/recreating
-    // the dirty row is the safe ownership boundary (lv_obj_clean would retain
-    // old spans and leak memory during a live redraw).
-    lv_obj_delete(terminal_grid_rows[row_index]);
-    const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-    const int line_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
-    lv_obj_t *line = lv_obj_create(terminal_grid);
-    lv_obj_set_size(line, std::max(1, static_cast<int>(lv_obj_get_content_width(terminal_grid))), line_height);
-    lv_obj_set_pos(line, 0, static_cast<int32_t>(row_index * line_height));
-    lv_obj_set_style_bg_opa(line, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(line, 0, 0);
-    lv_obj_set_style_pad_all(line, 0, 0);
-    lv_obj_set_style_text_font(line, font, 0);
-    lv_obj_set_scrollbar_mode(line, LV_SCROLLBAR_MODE_OFF);
-    terminal_grid_rows[row_index] = line;
-    const auto &cells = terminal_core.row(row_index);
-    size_t start = 0;
-    while (start < cells.size()) {
-        size_t end = start + 1;
-        while (end < cells.size() && same_terminal_style(cells[start], cells[end])) ++end;
-        const auto &cell = cells[start];
-        std::string text;
-        text.reserve(end - start);
-        for (size_t index = start; index < end; ++index) text += terminal_cell_utf8(cells[index].codepoint);
-
-        uint32_t foreground = xterm_palette_rgb(cell.foreground, theme_color_hex);
-        uint32_t background = xterm_palette_rgb(cell.background, 0x000000);
-        if (cell.style & pocketssh::CellStyleBold) {
-            if (cell.foreground < 8) foreground = xterm_palette_rgb(cell.foreground + 8, theme_color_hex);
-        }
-        if (cell.style & pocketssh::CellStyleInverse) std::swap(foreground, background);
-        if (cell.style & pocketssh::CellStyleConceal) foreground = background;
-
-        const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
-        const int cell_width = std::max(1, static_cast<int>(lv_font_get_glyph_width(font, 'M', 'M')));
-        lv_obj_t *label = lv_label_create(line);
-        lv_label_set_text(label, text.c_str());
-        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
-        lv_obj_set_pos(label, static_cast<int32_t>(start * cell_width), 0);
-        lv_obj_set_size(label, static_cast<int32_t>((end - start) * cell_width), line_height);
-        lv_obj_set_style_pad_all(label, 0, 0);
-        lv_obj_set_style_border_width(label, 0, 0);
-        lv_obj_set_style_text_font(label, font, 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(foreground), 0);
-        lv_obj_set_style_text_opa(label, (cell.style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(label, lv_color_hex(background), 0);
-        lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
-        lv_text_decor_t decor = LV_TEXT_DECOR_NONE;
-        if (cell.style & pocketssh::CellStyleUnderline) decor = static_cast<lv_text_decor_t>(decor | LV_TEXT_DECOR_UNDERLINE);
-        if (cell.style & pocketssh::CellStyleStrike) decor = static_cast<lv_text_decor_t>(decor | LV_TEXT_DECOR_STRIKETHROUGH);
-        lv_obj_set_style_text_decor(label, decor, 0);
-        start = end;
-    }
 }
 
 void SSHTerminal::create_side_panel()
