@@ -4505,10 +4505,12 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
             terminal->terminal_selection_end_col = terminal->terminal_selection_start_col;
             terminal->terminal_grid_selection_active = true;
             terminal->terminal_grid_touch_scroll_active = false;
+            lv_obj_invalidate(target);
             return;
         }
         if (code == LV_EVENT_PRESSING && terminal->terminal_grid_selection_active) {
             selected_cell(&terminal->terminal_selection_end_row, &terminal->terminal_selection_end_col);
+            lv_obj_invalidate(target);
             return;
         }
         if (code == LV_EVENT_PRESSING && terminal->terminal_grid_touch_scroll_active) {
@@ -4536,7 +4538,9 @@ void SSHTerminal::output_touch_event_cb(lv_event_t* e)
                 if (truncated) copied.resize(4096);
                 terminal->device_clipboard = std::move(copied);
                 terminal->terminal_grid_selection_active = false;
-                terminal->append_text(truncated ? "copy: selection truncated to 4096 bytes\n" : "copy: selection saved to device clipboard\n");
+                ESP_LOGW(TAG, "copy: selection saved (%u byte(s))%s",
+                         static_cast<unsigned>(terminal->device_clipboard.size()), truncated ? " truncated" : "");
+                lv_obj_invalidate(target);
             }
             terminal->terminal_grid_touch_scroll_active = false;
             terminal->terminal_grid_touch_accum_y = 0;
@@ -4598,6 +4602,20 @@ void SSHTerminal::terminal_grid_draw_event_cb(lv_event_t* e)
                 cell_dsc.bg_opa = LV_OPA_COVER;
                 cell_dsc.bg_color = lv_color_hex(background);
                 lv_draw_rect(layer, &cell_dsc, &cell_area);
+            }
+            if (terminal->terminal_grid_selection_active) {
+                const size_t start = terminal->terminal_selection_start_row * terminal->terminal_core.columns() +
+                                     terminal->terminal_selection_start_col;
+                const size_t end = terminal->terminal_selection_end_row * terminal->terminal_core.columns() +
+                                   terminal->terminal_selection_end_col;
+                const size_t position = row * terminal->terminal_core.columns() + col;
+                if (position >= std::min(start, end) && position <= std::max(start, end)) {
+                    lv_draw_rect_dsc_t selection_dsc;
+                    lv_draw_rect_dsc_init(&selection_dsc);
+                    selection_dsc.bg_opa = LV_OPA_COVER;
+                    selection_dsc.bg_color = lv_color_hex(0x255A76);
+                    lv_draw_rect(layer, &selection_dsc, &cell_area);
+                }
             }
             if (cell.codepoint == ' ') continue;
 
@@ -6567,12 +6585,18 @@ void SSHTerminal::populate_side_panel_page()
         {{"Insert", "KEY:INS"}, {"Delete", "KEY:DEL"}, {"Shift+Tab", "KEY:STAB"}, {"Paste", "PASTE"},
          {"Basic keys", "PAGE"}, {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""},
          {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""}},
+        {{"Older", "SCROLL:12"}, {"Live", "SCROLL:-512"}, {"Font compact", "FONT:COMPACT"}, {"Font large", "FONT:BIG"},
+         {"Status", "STATUS"}, {"Basic keys", "PAGE"}, {"", ""}, {"", ""}, {"", ""}, {"", ""},
+         {"", ""}, {"", ""}, {"", ""}, {"", ""}, {"", ""}},
     };
     constexpr size_t kPageCount = sizeof(kPages) / sizeof(kPages[0]);
     side_panel_page %= kPageCount;
     if (side_panel_title != nullptr) {
-        char title[16];
-        std::snprintf(title, sizeof(title), "Keys %u/%u", static_cast<unsigned>(side_panel_page + 1),
+        char title[48];
+        const char *host = connected_ssh_host.empty() ? "SSH off" : connected_ssh_host.c_str();
+        std::snprintf(title, sizeof(title), "%.14s %ux%u\nKeys %u/%u", host,
+                      static_cast<unsigned>(terminal_core.columns()), static_cast<unsigned>(terminal_core.rows()),
+                      static_cast<unsigned>(side_panel_page + 1),
                       static_cast<unsigned>(kPageCount));
         lv_label_set_text(side_panel_title, title);
     }
@@ -6646,7 +6670,26 @@ void SSHTerminal::send_special_key(const char* sequence)
         return;
     }
     if (strcmp(sequence, "PAGE") == 0) {
-        side_panel_page = static_cast<uint8_t>((side_panel_page + 1) % 3);
+        side_panel_page = static_cast<uint8_t>((side_panel_page + 1) % 4);
+        populate_side_panel_page();
+        return;
+    }
+    if (std::strncmp(sequence, "SCROLL:", 7) == 0) {
+        const int amount = static_cast<int>(std::strtol(sequence + 7, nullptr, 10));
+        scroll_terminal_output(amount);
+        return;
+    }
+    if (std::strcmp(sequence, "FONT:COMPACT") == 0) {
+        set_terminal_font_mode(false, false);
+        populate_side_panel_page();
+        return;
+    }
+    if (std::strcmp(sequence, "FONT:BIG") == 0) {
+        set_terminal_font_mode(true, false);
+        populate_side_panel_page();
+        return;
+    }
+    if (std::strcmp(sequence, "STATUS") == 0) {
         populate_side_panel_page();
         return;
     }
