@@ -1831,14 +1831,16 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             terminal->append_text("serialrx: DATA exceeds expected size\n");
             ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=data-overflow");
             std::fclose(out);
-            std::remove(target_path.c_str());
+            // Do not disturb a previously verified sidecar.  Only the
+            // temporary download may be discarded before CRC promotion.
+            std::remove(partial_path.c_str());
             return false;
         }
         const size_t written = std::fwrite(chunk.data(), 1, chunk.size(), out);
         if (written != chunk.size()) {
             terminal->append_text("serialrx: write failure\n");
             std::fclose(out);
-            std::remove(target_path.c_str());
+            std::remove(partial_path.c_str());
             return false;
         }
         received += chunk.size();

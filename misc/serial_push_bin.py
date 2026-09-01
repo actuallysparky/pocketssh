@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
         help="Bytes per DATA frame before hex encoding (default: 128)",
     )
     parser.add_argument(
+        "--inter-frame-ms",
+        type=float,
+        default=0.0,
+        help="Delay after each DATA frame; useful for the T-Deck USB-JTAG receiver",
+    )
+    parser.add_argument(
         "--max-bytes",
         type=int,
         default=0,
@@ -261,6 +267,8 @@ def main() -> int:
             block = data[offset : offset + chunk]
             line = b"DATA " + block.hex().encode("ascii") + b"\n"
             ser.write(line)
+            if args.inter_frame_ms > 0:
+                time.sleep(args.inter_frame_ms / 1000.0)
             sent += len(block)
 
             # Pace slightly to avoid overwhelming the receiver and VFS.
