@@ -14,9 +14,11 @@
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <new>
 #include <string>
 #include <strings.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include "driver/gpio.h"
@@ -61,6 +63,9 @@ constexpr gpio_num_t kDisplayBacklight = GPIO_NUM_42;
 constexpr const char *kKeysDir = "/sdcard/ssh_keys";
 constexpr const char *kKeysDirAlt = "/sd/ssh_keys";
 constexpr size_t kMaxKeySize = 16 * 1024;
+// SSH setup walks Wi-Fi, SD configuration, libssh2, and the terminal layout.
+// It must never share the tiny USB FIFO reader's stack.
+constexpr uint32_t kSerialCommandStackBytes = 16 * 1024;
 
 constexpr TickType_t ticks_from_ms(uint32_t ms)
 {
@@ -242,20 +247,58 @@ bool starts_with_ascii(const std::string &value, const char *prefix)
     return value.compare(0, prefix_len, prefix) == 0;
 }
 
+struct SerialCommandRequest {
+    std::string line;
+};
+
+void serial_command_task(void *arg)
+{
+    auto *request = static_cast<SerialCommandRequest *>(arg);
+    if (request == nullptr) {
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    std::string line = std::move(request->line);
+    delete request;
+
+    if (g_terminal != nullptr && !line.empty()) {
+        // This is intentionally the same public entry point as automated
+        // terminal control on the T-Deck. It dispatches a complete command
+        // locally while disconnected and sends a complete line to an active
+        // remote shell without holding the LVGL lock across network work.
+        g_terminal->run_control_command(line);
+    }
+
+    const UBaseType_t remaining_words = uxTaskGetStackHighWaterMark(nullptr);
+    ESP_LOGI(kTag, "serial command complete; stack free=%u B",
+             static_cast<unsigned>(remaining_words * sizeof(StackType_t)));
+    vTaskDelete(nullptr);
+}
+
 void inject_terminal_command(const std::string &line)
 {
-    if (g_terminal == nullptr || line.empty()) {
+    if (line.empty()) {
         return;
     }
-    if (!lvgl_port_lock(200)) {
-        ESP_LOGW(kTag, "serial ctl: LVGL lock timeout for command '%s'", line.c_str());
+
+    auto *request = new (std::nothrow) SerialCommandRequest{line};
+    if (request == nullptr) {
+        ESP_LOGW(kTag, "serial ctl: command allocation failed");
         return;
     }
-    for (char c : line) {
-        g_terminal->handle_key_input(c);
+
+    const BaseType_t task_ok = xTaskCreatePinnedToCore(serial_command_task,
+                                                        "tpager_serial_cmd",
+                                                        kSerialCommandStackBytes,
+                                                        request,
+                                                        4,
+                                                        nullptr,
+                                                        1);
+    if (task_ok != pdPASS) {
+        ESP_LOGW(kTag, "serial ctl: failed to start command worker");
+        delete request;
     }
-    g_terminal->handle_key_input('\n');
-    lvgl_port_unlock();
 }
 
 void handle_serial_control_line(const std::string &raw_line)
