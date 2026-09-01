@@ -29,6 +29,13 @@ constexpr gpio_num_t kSpiMiso = GPIO_NUM_33;
 constexpr gpio_num_t kSpiSclk = GPIO_NUM_35;
 constexpr gpio_num_t kSdCs = GPIO_NUM_21;
 constexpr gpio_num_t kDisplayCs = GPIO_NUM_38;
+constexpr gpio_num_t kLoRaCs = GPIO_NUM_36;
+constexpr gpio_num_t kNfcCs = GPIO_NUM_39;
+// SD initializes SPI before LVGL during boot.  This must cover the largest
+// display DMA stripe as well as a block-sized SDSPI transaction; otherwise
+// esp_lcd_panel_draw_bitmap rejects LVGL transfers after seeing the existing
+// bus and the UI never receives a flush completion.
+constexpr size_t kSharedSpiMaxTransferBytes = 480 * 40 * sizeof(uint16_t);
 
 sdmmc_card_t *g_card = nullptr;
 bool g_mounted = false;
@@ -53,7 +60,7 @@ esp_err_t ensure_spi_bus()
     bus_cfg.sclk_io_num = kSpiSclk;
     bus_cfg.quadwp_io_num = GPIO_NUM_NC;
     bus_cfg.quadhd_io_num = GPIO_NUM_NC;
-    bus_cfg.max_transfer_sz = 4096;
+    bus_cfg.max_transfer_sz = kSharedSpiMaxTransferBytes;
 
     esp_err_t ret = spi_bus_initialize(kSpiHost, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret == ESP_ERR_INVALID_STATE) {
@@ -99,14 +106,13 @@ esp_err_t try_mount_card(sdmmc_card_t **out_card)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Shared SPI contract: keep both CS lines deasserted before SDSPI probing.
-    gpio_reset_pin(kDisplayCs);
-    gpio_set_direction(kDisplayCs, GPIO_MODE_OUTPUT);
-    gpio_set_level(kDisplayCs, 1);
-
-    gpio_reset_pin(kSdCs);
-    gpio_set_direction(kSdCs, GPIO_MODE_OUTPUT);
-    gpio_set_level(kSdCs, 1);
+    // Shared SPI contract: keep every peer deselected before SDSPI probing.
+    const gpio_num_t chip_selects[] = {kDisplayCs, kSdCs, kLoRaCs, kNfcCs};
+    for (const gpio_num_t pin : chip_selects) {
+        gpio_reset_pin(pin);
+        gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+        gpio_set_level(pin, 1);
+    }
     vTaskDelay(pdMS_TO_TICKS(5));
 
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
