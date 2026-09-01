@@ -33,6 +33,10 @@ starves the device UI task and triggers the watchdog.
   - `Caps` + encoder: terminal buffer scroll up/down
 - Power command:
   - `shutdown` / `poweroff` enters deep sleep (wake by BOOT or encoder button)
+- Safe USB key replacement:
+  - `serialrx ssh_keys/<name>.pem` writes only one PEM leaf in the existing
+    `/sdcard/ssh_keys/` directory, using the usual size/CRC verification and
+    atomic promotion. Other nested paths remain rejected.
 
 ## Build/Deploy Contract (T-Pager)
 - Packaged artifact name is `PocketSSH-TPager.bin`.

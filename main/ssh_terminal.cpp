@@ -1645,6 +1645,41 @@ bool valid_serial_target_name(const std::string &name)
     return true;
 }
 
+// The ordinary receiver is intentionally constrained to an SD-root filename.
+// Key replacement needs one additional, equally constrained destination: the
+// existing ssh_keys directory.  Do not make this a generic relative-path
+// mechanism; only a single .pem leaf below ssh_keys is permitted.
+bool resolve_serial_target_name(const std::string &requested_name, const char *sd_root,
+                                std::string *target_path)
+{
+    if (sd_root == nullptr || target_path == nullptr) {
+        return false;
+    }
+
+    static constexpr const char *kKeysPrefix = "ssh_keys/";
+    if (requested_name.rfind(kKeysPrefix, 0) == 0) {
+        const std::string leaf = requested_name.substr(std::strlen(kKeysPrefix));
+        if (!valid_serial_target_name(leaf) || leaf.size() < 5 ||
+            strcasecmp(leaf.c_str() + leaf.size() - 4, ".pem") != 0) {
+            return false;
+        }
+
+        const std::string keys_dir = std::string(sd_root) + "/ssh_keys";
+        struct stat keys_stat = {};
+        if (stat(keys_dir.c_str(), &keys_stat) != 0 || !S_ISDIR(keys_stat.st_mode)) {
+            return false;
+        }
+        *target_path = keys_dir + "/" + leaf;
+        return true;
+    }
+
+    if (!valid_serial_target_name(requested_name)) {
+        return false;
+    }
+    *target_path = std::string(sd_root) + "/" + requested_name;
+    return true;
+}
+
 bool file_size_and_crc32(const std::string &path, size_t *size_out, uint32_t *crc_out)
 {
     if (size_out == nullptr || crc_out == nullptr) return false;
@@ -1857,11 +1892,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         }
     } serial_rx_guard(terminal);
 
-    if (!valid_serial_target_name(target_name)) {
-        terminal->append_text("serialrx: invalid target filename\n");
-        return false;
-    }
-
     ScopedSDMount mount_guard = {};
     if (!mount_guard.ok()) {
         terminal->append_text("serialrx: SD mount failed\n");
@@ -1882,7 +1912,11 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         return false;
     }
 
-    const std::string target_path = std::string(root_dir) + "/" + target_name;
+    std::string target_path;
+    if (!resolve_serial_target_name(target_name, root_dir, &target_path)) {
+        terminal->append_text("serialrx: invalid target filename\n");
+        return false;
+    }
     const std::string partial_path = target_path + ".partial";
     struct stat partial_stat = {};
     size_t partial_size = (stat(partial_path.c_str(), &partial_stat) == 0 && S_ISREG(partial_stat.st_mode))
@@ -4985,6 +5019,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("  serialrx [filename] - Receive file into SD root (default: ");
                 append_text(kDefaultSerialRxFilename);
                 append_text(")\n");
+                append_text("    Use ssh_keys/<name>.pem only to replace an SD SSH key.\n");
                 append_text("    Protocol: BEGIN <size> <crc32hex>, DATA <hex>, END\n");
                 append_text("  ssh <ALIAS> - Resolve alias from ssh_config and connect via key\n");
                 append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
