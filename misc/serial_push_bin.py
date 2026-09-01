@@ -222,7 +222,13 @@ def main() -> int:
             return 0
 
         header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
-        ser.write(header)
+        # The first line can race the USB-JTAG control-to-receiver handoff.
+        # BEGIN is idempotent before DATA; repeat it so at least one copy is
+        # consumed by serialrx. Later copies are harmlessly ignored.
+        for _ in range(3):
+            ser.write(header)
+            ser.flush()
+            time.sleep(0.04)
 
         end_offset = total if args.max_bytes <= 0 else min(total, start_offset + args.max_bytes)
         sent = start_offset
