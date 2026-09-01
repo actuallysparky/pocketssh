@@ -1533,6 +1533,61 @@ bool valid_serial_target_name(const std::string &name)
     return true;
 }
 
+bool file_size_and_crc32(const std::string &path, size_t *size_out, uint32_t *crc_out)
+{
+    if (size_out == nullptr || crc_out == nullptr) return false;
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return false;
+
+    uint8_t buffer[1024];
+    size_t total = 0;
+    uint32_t crc = 0;
+    bool ok = true;
+    while (true) {
+        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
+        if (read > 0) {
+            crc = esp_crc32_le(crc, buffer, static_cast<uint32_t>(read));
+            total += read;
+        }
+        if (read < sizeof(buffer)) {
+            if (std::ferror(file) != 0) ok = false;
+            break;
+        }
+    }
+    std::fclose(file);
+    if (!ok) return false;
+    *size_out = total;
+    *crc_out = crc;
+    return true;
+}
+
+bool serial_partial_metadata_matches(const std::string &metadata_path, size_t expected_size, uint32_t expected_crc)
+{
+    FILE *file = std::fopen(metadata_path.c_str(), "r");
+    if (file == nullptr) return false;
+    unsigned long stored_size = 0;
+    unsigned long stored_crc = 0;
+    const int scanned = std::fscanf(file, "%lu %lx", &stored_size, &stored_crc);
+    std::fclose(file);
+    return scanned == 2 && stored_size == expected_size && stored_crc == expected_crc;
+}
+
+bool write_serial_partial_metadata(const std::string &metadata_path, size_t expected_size, uint32_t expected_crc)
+{
+    const std::string temporary = metadata_path + ".tmp";
+    FILE *file = std::fopen(temporary.c_str(), "w");
+    if (file == nullptr) return false;
+    const int written = std::fprintf(file, "%u %08" PRIx32 "\n",
+                                     static_cast<unsigned>(expected_size), expected_crc);
+    const bool ok = written > 0 && std::fflush(file) == 0 && fsync(fileno(file)) == 0;
+    std::fclose(file);
+    if (!ok || std::rename(temporary.c_str(), metadata_path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
 bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
 {
     if (terminal == nullptr || !valid_serial_target_name(target_name)) {
@@ -1566,31 +1621,9 @@ bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
         return false;
     }
 
-    FILE *file = std::fopen(path.c_str(), "rb");
-    if (file == nullptr) {
-        terminal->append_text("sdverify: file open failed\n");
-        ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=open", path.c_str());
-        return false;
-    }
-
-    uint8_t buffer[1024];
     size_t total = 0;
     uint32_t crc = 0;
-    bool read_ok = true;
-    while (true) {
-        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
-        if (read > 0) {
-            crc = esp_crc32_le(crc, buffer, static_cast<uint32_t>(read));
-            total += read;
-        }
-        if (read < sizeof(buffer)) {
-            if (std::ferror(file) != 0) read_ok = false;
-            break;
-        }
-    }
-    std::fclose(file);
-
-    if (!read_ok || total != static_cast<size_t>(file_stat.st_size)) {
+    if (!file_size_and_crc32(path, &total, &crc) || total != static_cast<size_t>(file_stat.st_size)) {
         terminal->append_text("sdverify: read failed\n");
         ESP_LOGW(TAG, "POCKETCTL sdverify failed path=%s reason=read bytes=%u expected=%u",
                  path.c_str(), static_cast<unsigned>(total), static_cast<unsigned>(file_stat.st_size));
@@ -1653,31 +1686,29 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     }
 
     const std::string target_path = std::string(root_dir) + "/" + target_name;
-    FILE *out = std::fopen(target_path.c_str(), "wb");
-    if (out == nullptr) {
-        ESP_LOGE(TAG, "serialrx: failed to open %s: errno=%d", target_path.c_str(), errno);
-        terminal->append_text("serialrx: failed to open target file\n");
-        return false;
-    }
+    const std::string partial_path = target_path + ".partial";
+    const std::string metadata_path = partial_path + ".meta";
+    struct stat partial_stat = {};
+    size_t partial_size = (stat(partial_path.c_str(), &partial_stat) == 0 && S_ISREG(partial_stat.st_mode))
+        ? static_cast<size_t>(partial_stat.st_size) : 0;
 
     terminal->append_text("serialrx: waiting for BEGIN <size> <crc32hex>\n");
     terminal->append_text("serialrx: send DATA <hex> lines, then END\n");
     ESP_LOGI(TAG, "serialrx ready: target=%s", target_path.c_str());
     // The T-Deck serial console runs at warning level in Launcher use; keep
     // this host-protocol marker visible so the sender can begin streaming.
-    ESP_LOGW(TAG, "POCKETCTL serialrx_ready target=%s", target_path.c_str());
+    ESP_LOGW(TAG, "POCKETCTL serialrx_ready target=%s partial=%u", target_path.c_str(),
+             static_cast<unsigned>(partial_size));
 
     std::string line;
     if (!serial_read_line_with_timeout(30000, &line)) {
         terminal->append_text("serialrx: timeout waiting for BEGIN\n");
-        std::fclose(out);
         return false;
     }
 
     const std::vector<std::string> begin_parts = split_nonempty_whitespace(line);
-    if (begin_parts.size() < 3 || lowercase_ascii(begin_parts[0]) != "begin") {
+    if (begin_parts.size() < 4 || lowercase_ascii(begin_parts[0]) != "begin") {
         terminal->append_text("serialrx: invalid BEGIN header\n");
-        std::fclose(out);
         return false;
     }
 
@@ -1686,28 +1717,58 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     if (!parse_u64_decimal(begin_parts[1], &expected_size_u64) ||
         !parse_u32_hex(begin_parts[2], &expected_crc)) {
         terminal->append_text("serialrx: invalid BEGIN arguments\n");
-        std::fclose(out);
         return false;
     }
     const size_t expected_size = static_cast<size_t>(expected_size_u64);
+    uint64_t expected_offset_u64 = 0;
+    if (!parse_u64_decimal(begin_parts[3], &expected_offset_u64) || expected_offset_u64 > expected_size) {
+        terminal->append_text("serialrx: invalid BEGIN offset\n");
+        return false;
+    }
+
+    if (!serial_partial_metadata_matches(metadata_path, expected_size, expected_crc)) {
+        std::remove(partial_path.c_str());
+        std::remove(metadata_path.c_str());
+        partial_size = 0;
+        if (!write_serial_partial_metadata(metadata_path, expected_size, expected_crc)) {
+            terminal->append_text("serialrx: failed to persist partial metadata\n");
+            return false;
+        }
+    }
+    if (partial_size != static_cast<size_t>(expected_offset_u64)) {
+        terminal->append_text("serialrx: resume offset mismatch\n");
+        ESP_LOGW(TAG, "POCKETCTL serialrx_resume_mismatch path=%s partial=%u requested=%u",
+                 partial_path.c_str(), static_cast<unsigned>(partial_size),
+                 static_cast<unsigned>(expected_offset_u64));
+        return false;
+    }
+
+    FILE *out = std::fopen(partial_path.c_str(), "ab");
+    if (out == nullptr) {
+        ESP_LOGE(TAG, "serialrx: failed to open %s: errno=%d", partial_path.c_str(), errno);
+        terminal->append_text("serialrx: failed to open partial file\n");
+        return false;
+    }
 
     char hdr[128];
     std::snprintf(hdr, sizeof(hdr), "serialrx: receiving %u bytes to %s\n",
-                  static_cast<unsigned>(expected_size),
+                  static_cast<unsigned>(expected_size - partial_size),
                   target_path.c_str());
     terminal->append_text(hdr);
 
     std::vector<uint8_t> chunk;
-    size_t received = 0;
-    uint32_t crc = 0;
+    size_t received = partial_size;
     int last_percent = -1;
 
     while (received < expected_size) {
         if (!serial_read_line_with_timeout(20000, &line)) {
-            terminal->append_text("serialrx: timeout during transfer\n");
+            std::fflush(out);
+            fsync(fileno(out));
             std::fclose(out);
-            std::remove(target_path.c_str());
-            return false;
+            terminal->append_text("serialrx: transfer paused\n");
+            ESP_LOGW(TAG, "POCKETCTL serialrx_paused path=%s bytes=%u total=%u reason=timeout",
+                     partial_path.c_str(), static_cast<unsigned>(received), static_cast<unsigned>(expected_size));
+            return true;
         }
 
         const std::vector<std::string> parts = split_nonempty_whitespace(line);
@@ -1718,8 +1779,18 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         if (cmd == "abort") {
             terminal->append_text("serialrx: aborted by host\n");
             std::fclose(out);
-            std::remove(target_path.c_str());
+            std::remove(partial_path.c_str());
+            std::remove(metadata_path.c_str());
             return false;
+        }
+        if (cmd == "pause") {
+            std::fflush(out);
+            fsync(fileno(out));
+            std::fclose(out);
+            terminal->append_text("serialrx: transfer paused\n");
+            ESP_LOGW(TAG, "POCKETCTL serialrx_paused path=%s bytes=%u total=%u reason=host",
+                     partial_path.c_str(), static_cast<unsigned>(received), static_cast<unsigned>(expected_size));
+            return true;
         }
         if (cmd != "data" || parts.size() < 2) {
             continue;
@@ -1728,7 +1799,8 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         if (!decode_hex_payload(parts[1], &chunk)) {
             terminal->append_text("serialrx: invalid DATA hex payload\n");
             std::fclose(out);
-            std::remove(target_path.c_str());
+            std::remove(partial_path.c_str());
+            std::remove(metadata_path.c_str());
             return false;
         }
         if (chunk.empty()) {
@@ -1747,7 +1819,6 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
             std::remove(target_path.c_str());
             return false;
         }
-        crc = esp_crc32_le(crc, chunk.data(), static_cast<uint32_t>(chunk.size()));
         received += chunk.size();
 
         const int pct = (expected_size == 0) ? 100 : static_cast<int>((received * 100U) / expected_size);
@@ -1765,7 +1836,8 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     if (!serial_read_line_with_timeout(5000, &line)) {
         terminal->append_text("serialrx: missing END marker\n");
         std::fclose(out);
-        std::remove(target_path.c_str());
+        std::remove(partial_path.c_str());
+        std::remove(metadata_path.c_str());
         return false;
     }
 
@@ -1773,26 +1845,39 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     if (end_parts.empty() || lowercase_ascii(end_parts[0]) != "end") {
         terminal->append_text("serialrx: invalid END marker\n");
         std::fclose(out);
-        std::remove(target_path.c_str());
+        std::remove(partial_path.c_str());
+        std::remove(metadata_path.c_str());
         return false;
     }
 
-    std::fflush(out);
+    const bool flushed = std::fflush(out) == 0 && fsync(fileno(out)) == 0;
     std::fclose(out);
 
-    if (crc != expected_crc) {
+    size_t completed_size = 0;
+    uint32_t completed_crc = 0;
+    if (!flushed || !file_size_and_crc32(partial_path, &completed_size, &completed_crc) ||
+        completed_size != expected_size || completed_crc != expected_crc) {
         terminal->append_text("serialrx: CRC mismatch, file removed\n");
-        ESP_LOGE(TAG, "serialrx CRC mismatch expected=%08" PRIx32 " actual=%08" PRIx32, expected_crc, crc);
-        std::remove(target_path.c_str());
+        ESP_LOGE(TAG, "serialrx verification failed expected_bytes=%u actual_bytes=%u expected_crc=%08" PRIx32 " actual_crc=%08" PRIx32,
+                 static_cast<unsigned>(expected_size), static_cast<unsigned>(completed_size), expected_crc, completed_crc);
+        std::remove(partial_path.c_str());
+        std::remove(metadata_path.c_str());
         return false;
     }
+
+    if (std::rename(partial_path.c_str(), target_path.c_str()) != 0) {
+        terminal->append_text("serialrx: atomic install failed\n");
+        ESP_LOGE(TAG, "serialrx rename failed %s -> %s errno=%d", partial_path.c_str(), target_path.c_str(), errno);
+        return false;
+    }
+    std::remove(metadata_path.c_str());
 
     terminal->append_text("serialrx: transfer complete\n");
     // Keep the sender's completion evidence visible at the T-Deck's normal
     // Launcher log level.  The host tool matches this exact marker before
     // treating the SD copy as verified.
     ESP_LOGW(TAG, "POCKETCTL serialrx_complete path=%s bytes=%u crc=%08" PRIx32,
-             target_path.c_str(), static_cast<unsigned>(received), crc);
+             target_path.c_str(), static_cast<unsigned>(received), completed_crc);
     return true;
 }
 

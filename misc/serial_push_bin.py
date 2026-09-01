@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 import time
 import zlib
@@ -56,6 +57,12 @@ def parse_args() -> argparse.Namespace:
         help="Bytes per DATA frame before hex encoding (default: 128)",
     )
     parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=0,
+        help="Persist at most this many payload bytes, then send PAUSE for resumable staging (default: complete file)",
+    )
+    parser.add_argument(
         "--baud",
         type=int,
         default=115200,
@@ -91,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def wait_for_ready(ser: serial.Serial, timeout_s: float) -> bool:
+def wait_for_ready(ser: serial.Serial, timeout_s: float) -> int | None:
     deadline = time.time() + max(0.1, timeout_s)
     window = ""
     markers = ("pocketctl serialrx_ready", "serialrx ready:", "serialrx: waiting for begin")
@@ -106,6 +113,26 @@ def wait_for_ready(ser: serial.Serial, timeout_s: float) -> bool:
         if len(window) > 4096:
             window = window[-4096:]
         if any(marker in window for marker in markers):
+            match = re.search(r"pocketctl serialrx_ready[^\r\n]*partial=(\d+)", window)
+            return int(match.group(1)) if match else 0
+    return None
+
+
+def wait_for_pause(ser: serial.Serial, timeout_s: float, expected_bytes: int, expected_total: int) -> bool:
+    deadline = time.time() + max(0.1, timeout_s)
+    window = ""
+    while time.time() < deadline:
+        chunk = ser.read(4096)
+        if not chunk:
+            continue
+        text = chunk.decode(errors="ignore")
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        window = (window + text).lower()
+        if len(window) > 4096:
+            window = window[-4096:]
+        if ("pocketctl serialrx_paused" in window and f"bytes={expected_bytes}" in window and
+                f"total={expected_total}" in window):
             return True
     return False
 
@@ -167,17 +194,24 @@ def main() -> int:
             print(f"Triggering receiver: {trigger}")
             ser.write((trigger + "\n").encode("ascii"))
             ser.flush()
-            if not wait_for_ready(ser, args.trigger_timeout):
+            start_offset = wait_for_ready(ser, args.trigger_timeout)
+            if start_offset is None:
                 print("Timed out waiting for serialrx readiness marker.", file=sys.stderr)
                 return 3
         else:
-            print("No trigger mode: assuming serialrx is already active.")
+            start_offset = 0
+            print("No trigger mode: assuming serialrx is already active at offset 0.")
 
-        header = f"BEGIN {total} {crc32:08x}\n".encode("ascii")
+        if start_offset < 0 or start_offset > total:
+            print(f"Device reported invalid resume offset: {start_offset}", file=sys.stderr)
+            return 3
+
+        header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
         ser.write(header)
 
-        sent = 0
-        for offset in range(0, total, chunk):
+        end_offset = total if args.max_bytes <= 0 else min(total, start_offset + args.max_bytes)
+        sent = start_offset
+        for offset in range(start_offset, end_offset, chunk):
             block = data[offset : offset + chunk]
             line = b"DATA " + block.hex().encode("ascii") + b"\n"
             ser.write(line)
@@ -192,6 +226,16 @@ def main() -> int:
                 pct = int((sent * 100) / total)
                 if pct % 10 == 0 and (sent == len(block) or sent == total):
                     print(f"  {pct}% ({sent}/{total})")
+
+        if end_offset < total:
+            ser.write(b"PAUSE\n")
+            ser.flush()
+            print(f"Segment sent. Waiting for persisted offset {end_offset}...")
+            if not wait_for_pause(ser, args.tail_seconds, end_offset, total):
+                print("Timed out waiting for serialrx pause evidence.", file=sys.stderr)
+                return 4
+            print(f"Device persisted resumable segment: {end_offset}/{total} bytes.")
+            return 0
 
         ser.write(b"END\n")
         ser.flush()
