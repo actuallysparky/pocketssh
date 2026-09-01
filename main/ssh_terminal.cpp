@@ -28,6 +28,7 @@
 #include "lwip/netdb.h"
 #if defined(TPAGER_TARGET)
 #include "esp_lvgl_port.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "tpager_sd.hpp"
 #else
 #include "bsp/esp-bsp.h"
@@ -1522,7 +1523,7 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
     }
     line_out->clear();
 
-#if defined(TDECKPLUS_TARGET)
+#if defined(TDECKPLUS_TARGET) || defined(TPAGER_TARGET)
     // USB-JTAG traffic arrives in short FIFO bursts. Draining one byte per
     // loop made multi-megabyte Launcher sidecar staging impractical. Preserve
     // bytes after each newline so bulk reads cannot lose adjacent DATA frames.
@@ -1533,7 +1534,7 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
     const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
 
     while (esp_timer_get_time() < deadline_us) {
-#if defined(TDECKPLUS_TARGET)
+#if defined(TDECKPLUS_TARGET) || defined(TPAGER_TARGET)
         const size_t newline = pending_bytes.find('\n');
         if (newline != std::string::npos) {
             for (size_t index = 0; index < newline; ++index) {
@@ -1594,7 +1595,7 @@ bool serial_read_line_with_timeout(int timeout_ms, std::string *line_out)
         }
 #endif
     }
-#if defined(TDECKPLUS_TARGET)
+#if defined(TDECKPLUS_TARGET) || defined(TPAGER_TARGET)
     pending_bytes.clear();
     partial_line.clear();
 #endif
