@@ -1741,6 +1741,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     const std::vector<std::string> begin_parts = split_nonempty_whitespace(line);
     if (begin_parts.size() < 4 || lowercase_ascii(begin_parts[0]) != "begin") {
         terminal->append_text("serialrx: invalid BEGIN header\n");
+        ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=begin-header");
         return false;
     }
 
@@ -1749,12 +1750,14 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     if (!parse_u64_decimal(begin_parts[1], &expected_size_u64) ||
         !parse_u32_hex(begin_parts[2], &expected_crc)) {
         terminal->append_text("serialrx: invalid BEGIN arguments\n");
+        ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=begin-arguments");
         return false;
     }
     const size_t expected_size = static_cast<size_t>(expected_size_u64);
     uint64_t expected_offset_u64 = 0;
     if (!parse_u64_decimal(begin_parts[3], &expected_offset_u64) || expected_offset_u64 > expected_size) {
         terminal->append_text("serialrx: invalid BEGIN offset\n");
+        ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=begin-offset");
         return false;
     }
 
@@ -1781,6 +1784,8 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         terminal->append_text("serialrx: failed to open partial file\n");
         return false;
     }
+    ESP_LOGW(TAG, "POCKETCTL serialrx_begin path=%s total=%u offset=%u", partial_path.c_str(),
+             static_cast<unsigned>(expected_size), static_cast<unsigned>(partial_size));
 
     char hdr[128];
     std::snprintf(hdr, sizeof(hdr), "serialrx: receiving %u bytes to %s\n",
@@ -1831,6 +1836,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
 
         if (!decode_hex_payload(parts[1], &chunk)) {
             terminal->append_text("serialrx: invalid DATA hex payload\n");
+            ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=data-hex");
             std::fclose(out);
             std::remove(partial_path.c_str());
             std::remove(metadata_path.c_str());
@@ -1841,6 +1847,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         }
         if (received + chunk.size() > expected_size) {
             terminal->append_text("serialrx: DATA exceeds expected size\n");
+            ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=data-overflow");
             std::fclose(out);
             std::remove(target_path.c_str());
             return false;
