@@ -39,3 +39,34 @@ The functional specification requires a changed-host-key rejection test and
 human-visible display checks for the final canvas presentation, selection,
 paste, and overlay gestures.  Do not create a final `v2.0.0` release tag from
 this development evidence alone.
+
+## Latest development milestone (2026-08-31)
+
+This newer milestone is built from source revision `96df71f` (`Show terminal
+copy feedback visibly`).  Copy and selection now show a timed canvas-overlay
+notice such as `Copied 512 B` or `Copied 4096 B (truncated)` instead of
+writing feedback into the hidden local textarea during an SSH session.
+
+- Package name: `PocketSSH-2.0.bin`
+- SHA-256: `2378a44e31604236f3660aa16cf45f36334ab323384728c1f63d3600cc0283d7`
+- Size: `4,127,568` bytes
+- Host terminal-core tests and the isolated T-Deck Plus ESP-IDF build passed.
+- The registered device (`20:6e:f1:a5:59:30`) was flashed only at `app1` /
+  `ota_0`, `0x200000`, with the same SHA-256 artifact.  The 8 MiB app slot
+  retains 56% free space; no Launcher, factory, bootloader, partition table,
+  NVS, or existing SD ROM was written.
+- Boot evidence includes the 512-line PSRAM scrollback allocation, SD config
+  and `known_hosts` cache loading, Wi-Fi association, and an authenticated
+  `prodmini` shell with an initial `xterm-256color` 45x20 PTY.
+- A ten-minute untouched SSH-session soak was completed.  USB-JTAG serial
+  monitoring resets this target, so the session was deliberately not probed
+  during the interval; it is soak-duration evidence, not an independently
+  observed post-soak channel-health assertion.
+
+SD sidecar status for this exact artifact is intentionally **unverified**.
+The receiver acknowledged `/sdcard/PocketSSH-2.0.bin` and began the transfer,
+but the local serial transport lost the sender's final completion record.
+A later read-only SD mount check confirmed the card and existing configuration
+remain accessible, but this build does not serial-log directory sizes or CRCs.
+Do not claim the sidecar's contents are the latest artifact until a future
+transfer emits `POCKETCTL serialrx_complete` with the matching size and CRC32.
