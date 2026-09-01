@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_crc.h"
+#include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_image_format.h"
 #include "nvs_flash.h"
@@ -1646,6 +1647,108 @@ bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
     terminal->append_text(line);
     ESP_LOGW(TAG, "POCKETCTL sdverify path=%s bytes=%u crc=%08" PRIx32,
              path.c_str(), static_cast<unsigned>(total), crc);
+    return true;
+}
+
+bool valid_local_http_url(const std::string &url)
+{
+    // Sidecar installation is intentionally limited to the device's private
+    // LAN.  This keeps the command useful for the engineering workstation
+    // without turning PocketSSH into a general remote downloader.
+    return url.size() <= 192 && url.rfind("http://192.168.8.", 0) == 0 &&
+           url.find_first_of("\r\n") == std::string::npos;
+}
+
+bool network_receive_to_sd_file(SSHTerminal *terminal, const std::string &url,
+                                const std::string &target_name, size_t expected_size,
+                                uint32_t expected_crc)
+{
+    if (terminal == nullptr || !valid_local_http_url(url) || !valid_serial_target_name(target_name) ||
+        expected_size == 0) {
+        return false;
+    }
+    ScopedSDMount mount_guard = {};
+    if (!mount_guard.ok()) {
+        terminal->append_text("netrx: SD mount failed\n");
+        return false;
+    }
+#if defined(TDECKPLUS_TARGET)
+    const char *root_dir = "/sdcard";
+#else
+    const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" : (path_exists_dir("/sd") ? "/sd" : nullptr);
+#endif
+    if (root_dir == nullptr) return false;
+
+    const std::string target_path = std::string(root_dir) + "/" + target_name;
+    const std::string partial_path = target_path + ".partial";
+    std::remove(partial_path.c_str());
+
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.timeout_ms = 30000;
+    config.disable_auto_redirect = true;
+    config.keep_alive_enable = true;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr || esp_http_client_open(client, 0) != ESP_OK) {
+        if (client != nullptr) esp_http_client_cleanup(client);
+        terminal->append_text("netrx: HTTP open failed\n");
+        return false;
+    }
+    const int64_t content_length = esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
+    if (status != 200 || content_length != static_cast<int64_t>(expected_size)) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed status=%d length=%lld expected=%u", status,
+                 static_cast<long long>(content_length), static_cast<unsigned>(expected_size));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        terminal->append_text("netrx: unexpected HTTP response\n");
+        return false;
+    }
+
+    FILE *out = std::fopen(partial_path.c_str(), "wb");
+    if (out == nullptr) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        terminal->append_text("netrx: cannot create partial\n");
+        return false;
+    }
+    uint8_t buffer[2048];
+    size_t received = 0;
+    bool ok = true;
+    while (received < expected_size) {
+        const int read = esp_http_client_read(client, reinterpret_cast<char *>(buffer), sizeof(buffer));
+        if (read <= 0 || std::fwrite(buffer, 1, static_cast<size_t>(read), out) != static_cast<size_t>(read) ||
+            received + static_cast<size_t>(read) > expected_size) {
+            ok = false;
+            break;
+        }
+        received += static_cast<size_t>(read);
+    }
+    ok = ok && std::fflush(out) == 0;
+    (void)fsync(fileno(out));
+    std::fclose(out);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    size_t actual_size = 0;
+    uint32_t actual_crc = 0;
+    if (!ok || !file_size_and_crc32(partial_path, &actual_size, &actual_crc) ||
+        actual_size != expected_size || actual_crc != expected_crc) {
+        ESP_LOGW(TAG, "POCKETCTL netrx_failed bytes=%u crc=%08" PRIx32,
+                 static_cast<unsigned>(actual_size), actual_crc);
+        std::remove(partial_path.c_str());
+        terminal->append_text("netrx: verification failed\n");
+        return false;
+    }
+    if (std::rename(partial_path.c_str(), target_path.c_str()) != 0 &&
+        (errno != EEXIST || std::remove(target_path.c_str()) != 0 ||
+         std::rename(partial_path.c_str(), target_path.c_str()) != 0)) {
+        terminal->append_text("netrx: install failed\n");
+        return false;
+    }
+    ESP_LOGW(TAG, "POCKETCTL netrx_complete path=%s bytes=%u crc=%08" PRIx32,
+             target_path.c_str(), static_cast<unsigned>(actual_size), actual_crc);
+    terminal->append_text("netrx: transfer complete\n");
     return true;
 }
 
@@ -4435,6 +4538,20 @@ void SSHTerminal::handle_key_input(char key)
                     const std::string session_token = args.size() >= 2 ? args[1] : "";
                     if (!serial_receive_to_sd_file(this, target_name, session_token)) {
                         append_text("serialrx: failed\n");
+                    }
+                }
+            }
+            else if (current_input.rfind("netrx", 0) == 0) {
+                if (ssh_connected) {
+                    append_text("netrx unavailable during active SSH session\n");
+                } else {
+                    const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
+                    uint64_t expected_size = 0;
+                    uint32_t expected_crc = 0;
+                    if (args.size() < 4 || !parse_u64_decimal(args[2], &expected_size) ||
+                        !parse_u32_hex(args[3], &expected_crc) || expected_size > std::numeric_limits<size_t>::max() ||
+                        !network_receive_to_sd_file(this, args[0], args[1], static_cast<size_t>(expected_size), expected_crc)) {
+                        append_text("netrx: failed\n");
                     }
                 }
             }

@@ -81,6 +81,7 @@ else()
         esp_netif
         esp_event
         esp_timer
+        esp_http_client
         hal
         app_update
         bootloader_support
