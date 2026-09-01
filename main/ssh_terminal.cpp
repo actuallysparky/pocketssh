@@ -654,7 +654,8 @@ std::string resolve_ssh_config_path();
 std::string resolve_wifi_config_path();
 bool parse_ssh_config_file(SSHConfigFile *parsed);
 bool parse_wifi_config_file(std::vector<WifiProfile> *profiles);
-bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name);
+bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name,
+                               const std::string &session_token = std::string());
 
 std::string hex_encode(const unsigned char *data, size_t length)
 {
@@ -1648,7 +1649,8 @@ bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
     return true;
 }
 
-bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name)
+bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_name,
+                               const std::string &session_token)
 {
     if (terminal == nullptr) {
         return false;
@@ -1717,7 +1719,12 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         const int remaining_ms = static_cast<int>((begin_deadline_us - esp_timer_get_time()) / 1000);
         if (!serial_read_line_with_timeout(std::max(1, remaining_ms), &line)) break;
         begin_parts = split_nonempty_whitespace(line);
-        if (begin_parts.size() >= 4 && lowercase_ascii(begin_parts[0]) == "begin") break;
+        const bool is_begin = begin_parts.size() >= 4 && lowercase_ascii(begin_parts[0]) == "begin";
+        // A host-generated token prevents buffered BEGIN/DATA frames from an
+        // interrupted prior transfer from being accepted as this new session.
+        const bool token_matches = session_token.empty() ||
+                                   (begin_parts.size() >= 5 && begin_parts[4] == session_token);
+        if (is_begin && token_matches) break;
         ++ignored_preheader_lines;
         ignored_preheader_bytes += line.size();
         begin_parts.clear();
@@ -4426,7 +4433,8 @@ void SSHTerminal::handle_key_input(char key)
                 } else {
                     const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
                     const std::string target_name = args.empty() ? kDefaultSerialRxFilename : args[0];
-                    if (!serial_receive_to_sd_file(this, target_name)) {
+                    const std::string session_token = args.size() >= 2 ? args[1] : "";
+                    if (!serial_receive_to_sd_file(this, target_name, session_token)) {
                         append_text("serialrx: failed\n");
                     }
                 }

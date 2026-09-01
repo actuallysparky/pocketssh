@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import secrets
 import sys
 import time
 import zlib
@@ -204,6 +205,7 @@ def main() -> int:
     data = path.read_bytes()
     total = len(data)
     crc32 = zlib.crc32(data) & 0xFFFFFFFF
+    session_token = secrets.token_hex(8)
     chunk = max(1, args.chunk_bytes)
 
     print(f"Sending {total} bytes from {path}")
@@ -218,6 +220,7 @@ def main() -> int:
 
         if not args.no_trigger:
             trigger = args.trigger_command.strip() or f"__pocketctl serialrx {args.remote_name}"
+            trigger = f"{trigger} {session_token}"
             print(f"Triggering receiver: {trigger}")
             ser.write((trigger + "\n").encode("ascii"))
             ser.flush()
@@ -239,7 +242,7 @@ def main() -> int:
         time.sleep(1.0)
 
         if args.reset_partial:
-            header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
+            header = f"BEGIN {total} {crc32:08x} {start_offset} {session_token}\n".encode("ascii")
             for _ in range(3):
                 ser.write(header)
                 ser.flush()
@@ -252,7 +255,7 @@ def main() -> int:
             print(f"Discarded device partial at offset {start_offset}.")
             return 0
 
-        header = f"BEGIN {total} {crc32:08x} {start_offset}\n".encode("ascii")
+        header = f"BEGIN {total} {crc32:08x} {start_offset} {session_token}\n".encode("ascii")
         # The first line can race the USB-JTAG control-to-receiver handoff.
         # BEGIN is idempotent before DATA; repeat it so at least one copy is
         # consumed by serialrx. Later copies are harmlessly ignored.
