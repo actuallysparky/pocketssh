@@ -569,6 +569,42 @@ void runtime_task(void *)
     }
 }
 
+bool initialize_terminal_ui_with_retry()
+{
+    // The first full diagnostic-frame flush can still hold LVGL's mutex while
+    // early I2C/input work completes.  A single 50 ms attempt left the normal
+    // runtime permanently showing that boot frame on real hardware.  Retry
+    // with bounded waits instead of treating a transient display lock as a
+    // terminal-initialization failure.
+    constexpr int kUiLockAttempts = 12;
+    for (int attempt = 0; attempt < kUiLockAttempts; ++attempt) {
+        if (!lvgl_port_lock(250)) {
+            vTaskDelay(ticks_from_ms(75));
+            continue;
+        }
+
+        lv_obj_t *screen = g_terminal != nullptr ? g_terminal->create_terminal_screen() : nullptr;
+        if (screen != nullptr) {
+            lv_scr_load(screen);
+#ifdef POCKETSSH_VERSION
+            g_terminal->append_text("PocketSSH v" POCKETSSH_VERSION "\n");
+#else
+            g_terminal->append_text("PocketSSH T-Pager\n");
+#endif
+            g_terminal->append_text("Keyboard + encoder active\n");
+            lvgl_port_unlock();
+            return true;
+        }
+
+        lvgl_port_unlock();
+        break;
+    }
+
+    ESP_LOGE(kTag, "Failed to acquire LVGL lock for terminal UI after %d attempts", kUiLockAttempts);
+    tpager::diag_display_set_stage(&g_display, "Stage: terminal UI unavailable");
+    return false;
+}
+
 void boot_wifi_task(void *)
 {
     // Startup contract: defer auto-connect off app_main so input runtime starts
@@ -768,19 +804,7 @@ extern "C" void app_main(void)
                                             gpio_get_level(kKeyboardIrq));
 
     tpager::diag_display_set_stage(&g_display, "Stage: terminal init");
-    if (g_terminal != nullptr && lvgl_port_lock(50)) {
-        lv_obj_t *screen = g_terminal->create_terminal_screen();
-        lv_scr_load(screen);
-#ifdef POCKETSSH_VERSION
-        g_terminal->append_text("PocketSSH v" POCKETSSH_VERSION "\n");
-#else
-        g_terminal->append_text("PocketSSH T-Pager\n");
-#endif
-        g_terminal->append_text("Keyboard + encoder active\n");
-        lvgl_port_unlock();
-    } else {
-        ESP_LOGE(kTag, "Failed to initialize terminal UI");
-    }
+    (void)initialize_terminal_ui_with_retry();
 
     BaseType_t runtime_ok =
         xTaskCreatePinnedToCore(runtime_task, "tpager_runtime_task", 8192, nullptr, 5, nullptr, 1);
