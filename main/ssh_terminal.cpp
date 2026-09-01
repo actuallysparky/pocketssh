@@ -1713,7 +1713,7 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     const std::vector<std::string> begin_parts = split_nonempty_whitespace(line);
     if (begin_parts.size() < 4 || lowercase_ascii(begin_parts[0]) != "begin") {
         terminal->append_text("serialrx: invalid BEGIN header\n");
-        ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=begin-header");
+        ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=begin-header text='%s'", line.c_str());
         return false;
     }
 
