@@ -1768,6 +1768,8 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
         partial_size = 0;
         if (!write_serial_partial_metadata(metadata_path, expected_size, expected_crc)) {
             terminal->append_text("serialrx: failed to persist partial metadata\n");
+            ESP_LOGW(TAG, "POCKETCTL serialrx_failed reason=metadata path=%s errno=%d",
+                     metadata_path.c_str(), errno);
             return false;
         }
     }
