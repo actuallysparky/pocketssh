@@ -28,6 +28,12 @@ constexpr gpio_num_t kDisplayCs = GPIO_NUM_38;
 constexpr gpio_num_t kDisplayDc = GPIO_NUM_37;
 constexpr gpio_num_t kDisplayReset = GPIO_NUM_NC;
 constexpr gpio_num_t kDisplayBacklight = GPIO_NUM_42;
+// The Pager shares SPI with SD, LoRa, and NFC.  Every non-display device must
+// be deselected before the ST7796 is initialized or it can consume display
+// traffic and prevent the LCD transfer-complete interrupt from arriving.
+constexpr gpio_num_t kSdCs = GPIO_NUM_21;
+constexpr gpio_num_t kLoRaCs = GPIO_NUM_36;
+constexpr gpio_num_t kNfcCs = GPIO_NUM_39;
 
 constexpr uint32_t kDisplayPclkHz = 40 * 1000 * 1000;
 constexpr uint16_t kDisplayHRes = 480;
@@ -64,6 +70,20 @@ esp_err_t init_backlight()
     gpio_set_level(kDisplayBacklight, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(kDisplayBacklight, 1);
+    return ESP_OK;
+}
+
+esp_err_t deselect_shared_spi_devices()
+{
+    gpio_config_t cfg = {};
+    cfg.mode = GPIO_MODE_OUTPUT;
+    cfg.pin_bit_mask = (1ULL << kDisplayCs) | (1ULL << kSdCs) | (1ULL << kLoRaCs) | (1ULL << kNfcCs);
+    ESP_RETURN_ON_ERROR(gpio_config(&cfg), kTag, "shared SPI CS gpio config failed");
+
+    ESP_RETURN_ON_ERROR(gpio_set_level(kDisplayCs, 1), kTag, "display CS deselect failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(kSdCs, 1), kTag, "SD CS deselect failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(kLoRaCs, 1), kTag, "LoRa CS deselect failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(kNfcCs, 1), kTag, "NFC CS deselect failed");
     return ESP_OK;
 }
 
@@ -232,6 +252,7 @@ esp_err_t diag_display_init(DiagDisplay *display)
     ESP_RETURN_ON_FALSE(display != nullptr, ESP_ERR_INVALID_ARG, kTag, "display must not be null");
 
     ESP_RETURN_ON_ERROR(init_backlight(), kTag, "backlight init failed");
+    ESP_RETURN_ON_ERROR(deselect_shared_spi_devices(), kTag, "shared SPI CS init failed");
     ESP_RETURN_ON_ERROR(init_spi_bus(), kTag, "spi init failed");
     ESP_RETURN_ON_ERROR(init_panel(display), kTag, "panel init failed");
     ESP_RETURN_ON_ERROR(init_lvgl(display), kTag, "lvgl init failed");
