@@ -70,3 +70,34 @@ A later read-only SD mount check confirmed the card and existing configuration
 remain accessible, but this build does not serial-log directory sizes or CRCs.
 Do not claim the sidecar's contents are the latest artifact until a future
 transfer emits `POCKETCTL serialrx_complete` with the matching size and CRC32.
+
+## Current Launcher-safe delivery milestone (2026-08-31)
+
+The current image is source revision `51e7405` (`Confirm SD staging reset over
+serial`). It retains the 2.0 terminal behavior and adds auditable recovery for
+interrupted SD-sidecar staging.
+
+- Package name: `PocketSSH-2.0.bin`
+- SHA-256: `70aa489e439f9df17212f08b47fffd66e51552bd992082c8148478ad221a57a7`
+- Size: `4,132,320` bytes; CRC32: `968b6ff3`
+- ESP-IDF T-Deck Plus build passed. Image size is `0x3f0de0`; the verified
+  Launcher `app1` / `ota_0` slot at `0x200000` is `0x800000` bytes, leaving
+  56% free. No bootloader, partition table, factory app, NVS, or Launcher
+  region was written.
+- The registered device identity `20:6e:f1:a5:59:30` was verified immediately
+  before app-only flash. The flash broker recorded the exact package SHA-256
+  at `app1` / `ota_0`.
+- The same artifact was staged at `/sdcard/PocketSSH-2.0.bin` without changing
+  the existing SD ROM. Firmware-side completion and a separate `sdverify`
+  readback both report `4,132,320` bytes and CRC32 `968b6ff3`.
+- Post-flash boot evidence shows 512-line PSRAM scrollback, SD-backed Wi-Fi,
+  SSH config, and known-hosts cache loading, followed by Wi-Fi association.
+
+An authenticated `prodmini` session using the `xterm-256color` 45x20 PTY was
+left untouched for the agreed ten-minute soak. Serial access deliberately did
+not occur during this interval because opening the USB-JTAG console resets the
+target; this proves elapsed active-session time, but not an independently
+observed post-soak channel-health check.
+
+The current image still requires the direct changed-host-key and final
+visual-gesture acceptance checks before it can be called a final 2.0 release.
