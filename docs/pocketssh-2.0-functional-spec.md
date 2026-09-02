@@ -16,7 +16,10 @@ workflow. The 2.0 terminal work is validated on T-Deck Plus first.
 
 When no SSH channel is active, PocketSSH presents the existing local prompt
 and retains `wifi`, `hosts`, `connect`, `ssh`, `sshkey`, `fontsize`, `/color`,
-`serialrx`, `netinfo`, `clear`, and `exit` behavior. Existing SD paths,
+`serialrx`, `serialtx`, `sdverify`, `netinfo`, `clear`, and `exit` behavior. `serialrx`
+accepts arbitrary SD-relative paths for the physical local serial operator,
+with traversal and absolute-path rejection plus atomic CRC-checked promotion.
+Existing SD paths,
 profiles, NVS preferences, command history, status bar, and battery display
 remain compatible.
 

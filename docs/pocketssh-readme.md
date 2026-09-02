@@ -33,10 +33,16 @@ starves the device UI task and triggers the watchdog.
   - `Caps` + encoder: terminal buffer scroll up/down
 - Power command:
   - `shutdown` / `poweroff` enters deep sleep (wake by BOOT or encoder button)
-- Safe USB key replacement:
-  - `serialrx ssh_keys/<name>.pem` writes only one PEM leaf in the existing
-    `/sdcard/ssh_keys/` directory, using the usual size/CRC verification and
-    atomic promotion. Other nested paths remain rejected.
+- Local serial SD access:
+  - `serialrx <relative-path>` writes any SD-relative file path, creates
+    missing parent directories, and uses size/CRC verification plus atomic
+    promotion. `sdverify <relative-path>` reports the resulting size and CRC.
+  - `serialtx <relative-path>` reads an SD file to the local serial console;
+    `misc/serial_pull_bin.py` receives it and creates a local file only after
+    the device size and CRC agree.
+  - Absolute paths, `.`/`..` traversal, backslashes, and control characters
+    remain rejected. This is a physical local-console trust boundary: a local
+    operator could otherwise remove and modify the card directly.
 
 ## Build/Deploy Contract (T-Pager)
 - Packaged artifact name is `PocketSSH-TPager.bin`.

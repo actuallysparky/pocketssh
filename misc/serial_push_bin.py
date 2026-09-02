@@ -11,6 +11,9 @@ Default behavior:
 - Waits for firmware readiness marker in serial logs.
 - Streams BEGIN/DATA/END payload.
 - Defaults to staging `/sdcard/PocketSSH-TPager.bin` on device.
+
+`--remote-name` may be any safe SD-relative path. The device rejects absolute
+paths and traversal while creating missing destination directories.
 """
 
 from __future__ import annotations

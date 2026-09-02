@@ -1646,39 +1646,75 @@ bool valid_serial_target_name(const std::string &name)
     return true;
 }
 
-// The ordinary receiver is intentionally constrained to an SD-root filename.
-// Key replacement needs one additional, equally constrained destination: the
-// existing ssh_keys directory.  Do not make this a generic relative-path
-// mechanism; only a single .pem leaf below ssh_keys is permitted.
-bool resolve_serial_target_name(const std::string &requested_name, const char *sd_root,
-                                std::string *target_path)
+// The physical USB/JTAG console is an operator interface for the removable
+// card.  Permit arbitrary card-relative paths so it can repair configuration
+// and recover files without removing the card, but never accept an absolute
+// path, traversal component, or an escape through a second path separator.
+// This is intentionally a local-console trust boundary: anyone with that
+// access could remove the SD card and modify it directly.
+bool valid_sd_relative_path(const std::string &requested_name)
 {
-    if (sd_root == nullptr || target_path == nullptr) {
+    if (requested_name.empty() || requested_name.size() > 240 ||
+        requested_name.front() == '/' || requested_name.find('\\') != std::string::npos ||
+        requested_name.find_first_of("\r\n") != std::string::npos) {
         return false;
     }
 
-    static constexpr const char *kKeysPrefix = "ssh_keys/";
-    if (requested_name.rfind(kKeysPrefix, 0) == 0) {
-        const std::string leaf = requested_name.substr(std::strlen(kKeysPrefix));
-        if (!valid_serial_target_name(leaf) || leaf.size() < 5 ||
-            strcasecmp(leaf.c_str() + leaf.size() - 4, ".pem") != 0) {
+    size_t start = 0;
+    while (start < requested_name.size()) {
+        const size_t separator = requested_name.find('/', start);
+        const size_t end = separator == std::string::npos ? requested_name.size() : separator;
+        const std::string component = requested_name.substr(start, end - start);
+        if (component.empty() || component == "." || component == ".." ||
+            component.size() > 64 || component.find("..") != std::string::npos) {
             return false;
         }
-
-        const std::string keys_dir = std::string(sd_root) + "/ssh_keys";
-        struct stat keys_stat = {};
-        if (stat(keys_dir.c_str(), &keys_stat) != 0 || !S_ISDIR(keys_stat.st_mode)) {
-            return false;
+        if (separator == std::string::npos) {
+            return true;
         }
-        *target_path = keys_dir + "/" + leaf;
-        return true;
+        start = separator + 1;
     }
+    return false;
+}
 
-    if (!valid_serial_target_name(requested_name)) {
+bool resolve_serial_target_name(const std::string &requested_name, const char *sd_root,
+                                std::string *target_path)
+{
+    if (sd_root == nullptr || target_path == nullptr || !valid_sd_relative_path(requested_name)) {
         return false;
     }
     *target_path = std::string(sd_root) + "/" + requested_name;
     return true;
+}
+
+bool ensure_serial_target_parent(const char *sd_root, const std::string &target_path)
+{
+    if (sd_root == nullptr) {
+        return false;
+    }
+    const std::string root = sd_root;
+    if (target_path.rfind(root + "/", 0) != 0) {
+        return false;
+    }
+    const std::string relative = target_path.substr(root.size() + 1);
+    size_t start = 0;
+    std::string directory = root;
+    while (true) {
+        const size_t separator = relative.find('/', start);
+        if (separator == std::string::npos) {
+            return true;
+        }
+        directory += "/" + relative.substr(start, separator - start);
+        struct stat status = {};
+        if (stat(directory.c_str(), &status) != 0) {
+            if (mkdir(directory.c_str(), 0755) != 0) {
+                return false;
+            }
+        } else if (!S_ISDIR(status.st_mode)) {
+            return false;
+        }
+        start = separator + 1;
+    }
 }
 
 bool file_size_and_crc32(const std::string &path, size_t *size_out, uint32_t *crc_out)
@@ -1711,7 +1747,7 @@ bool file_size_and_crc32(const std::string &path, size_t *size_out, uint32_t *cr
 
 bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
 {
-    if (terminal == nullptr || !valid_serial_target_name(target_name)) {
+    if (terminal == nullptr) {
         return false;
     }
 
@@ -1734,7 +1770,11 @@ bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
         return false;
     }
 
-    const std::string path = std::string(root_dir) + "/" + target_name;
+    std::string path;
+    if (!resolve_serial_target_name(target_name, root_dir, &path)) {
+        terminal->append_text("sdverify: invalid SD-relative path\n");
+        return false;
+    }
     struct stat file_stat = {};
     if (stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
         terminal->append_text("sdverify: file not found\n");
@@ -1757,6 +1797,80 @@ bool verify_sd_artifact(SSHTerminal *terminal, const std::string &target_name)
     terminal->append_text(line);
     ESP_LOGW(TAG, "POCKETCTL sdverify path=%s bytes=%u crc=%08" PRIx32,
              path.c_str(), static_cast<unsigned>(total), crc);
+    return true;
+}
+
+bool serial_send_sd_file(SSHTerminal *terminal, const std::string &target_name)
+{
+    if (terminal == nullptr) {
+        return false;
+    }
+    ScopedSDMount mount_guard = {};
+    if (!mount_guard.ok()) {
+        terminal->append_text("serialtx: SD mount failed\n");
+        return false;
+    }
+#if defined(TDECKPLUS_TARGET)
+    const char *root_dir = "/sdcard";
+#else
+    const char *root_dir = path_exists_dir("/sdcard") ? "/sdcard" :
+                           (path_exists_dir("/sd") ? "/sd" : nullptr);
+#endif
+    std::string path;
+    if (root_dir == nullptr || !resolve_serial_target_name(target_name, root_dir, &path)) {
+        terminal->append_text("serialtx: invalid SD-relative path\n");
+        return false;
+    }
+    struct stat file_stat = {};
+    if (stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+        terminal->append_text("serialtx: file not found\n");
+        return false;
+    }
+
+    size_t expected_size = 0;
+    uint32_t expected_crc = 0;
+    if (!file_size_and_crc32(path, &expected_size, &expected_crc) ||
+        expected_size != static_cast<size_t>(file_stat.st_size)) {
+        terminal->append_text("serialtx: unable to verify source file\n");
+        return false;
+    }
+
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+        terminal->append_text("serialtx: unable to open source file\n");
+        return false;
+    }
+
+    ESP_LOGW(TAG, "POCKETCTL serialtx_begin path=%s bytes=%u crc=%08" PRIx32,
+             path.c_str(), static_cast<unsigned>(expected_size), expected_crc);
+    uint8_t buffer[48] = {};
+    size_t sent = 0;
+    bool ok = true;
+    while (true) {
+        const size_t read = std::fread(buffer, 1, sizeof(buffer), file);
+        if (read > 0) {
+            const std::string encoded = hex_encode(buffer, read);
+            ESP_LOGW(TAG, "POCKETCTL serialtx_data %s", encoded.c_str());
+            sent += read;
+            // Serial logging is synchronous on some ESP-IDF targets. Yielding
+            // prevents an arbitrary local-card read from starving IDLE.
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if (read < sizeof(buffer)) {
+            if (std::ferror(file) != 0) ok = false;
+            break;
+        }
+    }
+    std::fclose(file);
+    if (!ok || sent != expected_size) {
+        terminal->append_text("serialtx: read failed\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s bytes=%u expected=%u",
+                 path.c_str(), static_cast<unsigned>(sent), static_cast<unsigned>(expected_size));
+        return false;
+    }
+    ESP_LOGW(TAG, "POCKETCTL serialtx_complete path=%s bytes=%u crc=%08" PRIx32,
+             path.c_str(), static_cast<unsigned>(sent), expected_crc);
+    terminal->append_text("serialtx: transfer complete\n");
     return true;
 }
 
@@ -1916,6 +2030,10 @@ bool serial_receive_to_sd_file(SSHTerminal *terminal, const std::string &target_
     std::string target_path;
     if (!resolve_serial_target_name(target_name, root_dir, &target_path)) {
         terminal->append_text("serialrx: invalid target filename\n");
+        return false;
+    }
+    if (!ensure_serial_target_parent(root_dir, target_path)) {
+        terminal->append_text("serialrx: unable to create target directory\n");
         return false;
     }
     const std::string partial_path = target_path + ".partial";
@@ -4894,6 +5012,17 @@ void SSHTerminal::handle_key_input(char key)
                     }
                 }
             }
+            else if (current_input.rfind("serialtx", 0) == 0) {
+                if (ssh_connected) {
+                    append_text("serialtx unavailable during active SSH session\n");
+                } else {
+                    const std::vector<std::string> args = split_quoted_arguments(current_input, 2);
+                    const std::string target_name = args.empty() ? "" : args[0];
+                    if (!serial_send_sd_file(this, target_name)) {
+                        append_text("serialtx: failed\n");
+                    }
+                }
+            }
             else if (current_input.rfind("netrx", 0) == 0) {
                 if (ssh_connected) {
                     append_text("netrx unavailable during active SSH session\n");
@@ -5016,12 +5145,13 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
                 append_text("  netinfo - Show WiFi IP/netmask/gateway\n");
                 append_text("  sdcheck - Probe SD mountpoints and config visibility\n");
-                append_text("  sdverify <filename> - Report SD file size and CRC32\n");
-                append_text("  serialrx [filename] - Receive file into SD root (default: ");
+                append_text("  sdverify <relative-path> - Report SD file size and CRC32\n");
+                append_text("  serialrx [relative-path] - Receive file into SD (default: ");
                 append_text(kDefaultSerialRxFilename);
                 append_text(")\n");
-                append_text("    Use ssh_keys/<name>.pem only to replace an SD SSH key.\n");
+                append_text("    Any SD-relative path; absolute/traversal paths are rejected.\n");
                 append_text("    Protocol: BEGIN <size> <crc32hex>, DATA <hex>, END\n");
+                append_text("  serialtx <relative-path> - Send an SD file to local serial\n");
                 append_text("  ssh <ALIAS> - Resolve alias from ssh_config and connect via key\n");
                 append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
                 append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> - Connect via SSH with private key\n");
