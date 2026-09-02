@@ -87,6 +87,11 @@ private:
         AwaitFriendlyName,
         AwaitAutoConnect,
     };
+    enum class DirectSshStage : uint8_t {
+        None,
+        AwaitUsername,
+        AwaitPassword,
+    };
 
     lv_obj_t* terminal_screen;
     lv_obj_t* terminal_output;
@@ -122,6 +127,11 @@ private:
     std::string pending_saved_wifi_ssid;
     std::string pending_saved_wifi_password;
     std::string pending_saved_wifi_name;
+    DirectSshStage direct_ssh_stage;
+    std::string pending_direct_ssh_host;
+    int pending_direct_ssh_port;
+    std::string pending_direct_ssh_username;
+    bool local_input_sensitive;
     
     lv_timer_t* cursor_blink_timer;
     lv_timer_t* terminal_notice_timer;
@@ -221,6 +231,9 @@ private:
     void begin_saved_wifi_connect(const std::string &ssid, const std::string &password);
     bool handle_saved_wifi_prompt(const std::string &line);
     void cancel_saved_wifi_connect(const char *reason);
+    void begin_direct_ssh_connect(const std::string &host, int port);
+    bool handle_direct_ssh_prompt(const std::string &line);
+    void cancel_direct_ssh_connect(const char *reason);
     bool verify_host_key(const char *host, int port, const std::string &strict_host_key_checking);
     bool save_pending_host_key();
     void copy_visible_terminal();

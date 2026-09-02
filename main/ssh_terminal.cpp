@@ -4045,6 +4045,9 @@ SSHTerminal::SSHTerminal()
       bytes_received(0),
       history_index(-1),
       wifi_save_stage(WifiSaveStage::None),
+      direct_ssh_stage(DirectSshStage::None),
+      pending_direct_ssh_port(22),
+      local_input_sensitive(false),
       cursor_blink_timer(NULL),
       terminal_notice_timer(NULL),
       cursor_visible(true),
@@ -4627,7 +4630,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     const char* logo =
         "PocketSSH T-Pager\n"
         "Type 'help' for commands.\n"
-        "Start with: wifi auto, hosts, or connect <alias>\n\n";
+        "Start with: wifi auto, hosts, ssh <host>, or connect <alias>\n\n";
     #else
     const char* logo =
         "\n"
@@ -4645,6 +4648,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
         "   /color <name> - red orange yellow green blue purple white\n"
         "     Use quotes for spaces: connect \"My WiFi\" \"my pass\"\n"
         "   hosts - List aliases from /sdcard/ssh_keys/ssh_config or /sd/ssh_keys/ssh_config\n"
+        "   ssh <ALIAS|HOST|IP> [PORT] - Prompted password SSH\n"
         "   ssh <HOST> <PORT> <USER> <PASS> - SSH\n"
         "   sshkey <HOST> <PORT> <USER> <KEYFILE> - SSH key\n"
         "   disconnect - WiFi off | exit - SSH off\n"
@@ -4751,7 +4755,7 @@ void SSHTerminal::begin_saved_wifi_connect(const std::string &ssid, const std::s
 
 bool SSHTerminal::handle_saved_wifi_prompt(const std::string &line)
 {
-    const std::string response = trim_ascii(line);
+    std::string response = trim_ascii(line);
     if (lowercase_ascii(response) == "cancel") {
         cancel_saved_wifi_connect("WiFi profile save cancelled\n");
         return true;
@@ -4799,6 +4803,89 @@ bool SSHTerminal::handle_saved_wifi_prompt(const std::string &line)
     return true;
 }
 
+void SSHTerminal::cancel_direct_ssh_connect(const char *reason)
+{
+    direct_ssh_stage = DirectSshStage::None;
+    pending_direct_ssh_host.clear();
+    pending_direct_ssh_port = 22;
+    pending_direct_ssh_username.clear();
+    local_input_sensitive = false;
+    append_text(reason != nullptr ? reason : "Direct SSH login cancelled\n");
+}
+
+void SSHTerminal::begin_direct_ssh_connect(const std::string &host, int port)
+{
+    if (host.empty() || host.size() > 253 || host.find_first_of(" \t\r\n") != std::string::npos ||
+        port <= 0 || port > 65535) {
+        append_text("ERROR: Invalid SSH hostname or port\n");
+        return;
+    }
+    if (!wifi_connected) {
+        append_text("ERROR: WiFi not connected\n");
+        return;
+    }
+
+    pending_direct_ssh_host = host;
+    pending_direct_ssh_port = port;
+    pending_direct_ssh_username.clear();
+    direct_ssh_stage = DirectSshStage::AwaitUsername;
+    local_input_sensitive = false;
+    append_text("SSH username for ");
+    append_text(host.c_str());
+    if (port != 22) {
+        const std::string port_text = ":" + std::to_string(port);
+        append_text(port_text.c_str());
+    }
+    append_text(" (or 'cancel'):\n> ");
+}
+
+bool SSHTerminal::handle_direct_ssh_prompt(const std::string &line)
+{
+    std::string response = trim_ascii(line);
+    if (lowercase_ascii(response) == "cancel") {
+        cancel_direct_ssh_connect("Direct SSH login cancelled\n");
+        return true;
+    }
+
+    if (direct_ssh_stage == DirectSshStage::AwaitUsername) {
+        if (response.empty() || response.size() > 128) {
+            append_text("A username is required (or 'cancel'):\n> ");
+            return true;
+        }
+        pending_direct_ssh_username = response;
+        direct_ssh_stage = DirectSshStage::AwaitPassword;
+        local_input_sensitive = true;
+        append_text("SSH password (not stored; or 'cancel'):\n> ");
+        return true;
+    }
+
+    if (direct_ssh_stage != DirectSshStage::AwaitPassword) {
+        return false;
+    }
+    if (line.empty()) {
+        append_text("A password is required (or 'cancel'):\n> ");
+        return true;
+    }
+
+    // Keep direct-login credentials in RAM only for the immediate attempt.
+    // The input line is masked and bypasses command history/NVS persistence.
+    const std::string host = pending_direct_ssh_host;
+    const int port = pending_direct_ssh_port;
+    const std::string username = pending_direct_ssh_username;
+    std::string password = line;
+    direct_ssh_stage = DirectSshStage::None;
+    pending_direct_ssh_host.clear();
+    pending_direct_ssh_port = 22;
+    pending_direct_ssh_username.clear();
+    local_input_sensitive = false;
+    (void)connect(host.c_str(), port, username.c_str(), password.c_str());
+    std::fill(password.begin(), password.end(), '\0');
+    password.clear();
+    std::fill(response.begin(), response.end(), '\0');
+    response.clear();
+    return true;
+}
+
 void SSHTerminal::handle_key_input(char key)
 {
     if (ssh_connected) {
@@ -4827,7 +4914,9 @@ void SSHTerminal::handle_key_input(char key)
     if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
             const bool handling_saved_wifi_prompt = wifi_save_stage != WifiSaveStage::None;
-            bool credential_bearing_command = false;
+            const bool handling_direct_ssh_prompt = direct_ssh_stage != DirectSshStage::None;
+            bool credential_bearing_command =
+                handling_direct_ssh_prompt && direct_ssh_stage == DirectSshStage::AwaitPassword;
             std::string displayed_input = current_input;
             if (!handling_saved_wifi_prompt && current_input.rfind("connect ", 0) == 0) {
                 const std::vector<std::string> connect_args = split_quoted_arguments(current_input, 8);
@@ -4841,12 +4930,31 @@ void SSHTerminal::handle_key_input(char key)
                     displayed_input += " <redacted>";
                 }
             }
+            if (!handling_direct_ssh_prompt && current_input.rfind("ssh ", 0) == 0) {
+                const std::vector<std::string> ssh_args = split_quoted_arguments(current_input, 4);
+                if (ssh_args.size() >= 4) {
+                    credential_bearing_command = true;
+                    displayed_input = "ssh ";
+                    displayed_input += ssh_args[0];
+                    displayed_input += " ";
+                    displayed_input += ssh_args[1];
+                    displayed_input += " ";
+                    displayed_input += ssh_args[2];
+                    displayed_input += " <redacted>";
+                }
+            }
+            if (handling_direct_ssh_prompt && direct_ssh_stage == DirectSshStage::AwaitPassword) {
+                displayed_input = "<password redacted>";
+            }
             append_text("\n> ");
             append_text(displayed_input.c_str());
             append_text("\n");
             
             if (handling_saved_wifi_prompt) {
                 (void)handle_saved_wifi_prompt(current_input);
+            }
+            else if (handling_direct_ssh_prompt) {
+                (void)handle_direct_ssh_prompt(current_input);
             }
             else if (current_input == "/color" || current_input.rfind("/color ", 0) == 0 ||
                 current_input == "color" || current_input.rfind("color ", 0) == 0) {
@@ -4957,7 +5065,7 @@ void SSHTerminal::handle_key_input(char key)
                 }
             }
             else if (current_input.rfind("wifi", 0) == 0) {
-                const std::vector<std::string> args = split_quoted_arguments(current_input, 4);
+                std::vector<std::string> args = split_quoted_arguments(current_input, 4);
                 if (args.empty()) {
                     ESP_LOGW(TAG, "wifi command: listing profiles");
                     std::vector<WifiProfile> profiles;
@@ -5051,23 +5159,37 @@ void SSHTerminal::handle_key_input(char key)
                 }
             }
             else if (current_input.rfind("ssh ", 0) == 0) {
-                std::vector<std::string> parts = split_nonempty_whitespace(current_input);
-                
-                if (parts.size() == 2) {
-                    connect_using_ssh_alias(this, parts[1]);
-                } else if (parts.size() >= 5) {
-                    std::string host = parts[1];
-                    int port = std::atoi(parts[2].c_str());
-                    std::string user = parts[3];
-                    std::string pass = parts[4];
-
-                    if (port <= 0 || port > 65535) {
+                std::vector<std::string> args = split_quoted_arguments(current_input, 4);
+                if (args.size() == 1) {
+                    // A configured alias retains priority.  Anything else is
+                    // a direct hostname/IP login, including bare DNS names.
+                    ResolvedSSHConfig resolved = {};
+                    if (resolve_ssh_alias(args[0], &resolved)) {
+                        connect_using_ssh_alias(this, args[0]);
+                    } else {
+                        begin_direct_ssh_connect(args[0], 22);
+                    }
+                } else if (args.size() == 2) {
+                    int port = 0;
+                    if (!parse_int32(args[1], &port) || port <= 0 || port > 65535) {
                         append_text("ERROR: Invalid port for ssh command\n");
                     } else {
-                        connect(host.c_str(), port, user.c_str(), pass.c_str());
+                        begin_direct_ssh_connect(args[0], port);
+                    }
+                } else if (args.size() >= 4) {
+                    int port = 0;
+                    if (!parse_int32(args[1], &port) || port <= 0 || port > 65535) {
+                        append_text("ERROR: Invalid port for ssh command\n");
+                    } else {
+                        std::string password = args[3];
+                        (void)connect(args[0].c_str(), port, args[2].c_str(), password.c_str());
+                        std::fill(password.begin(), password.end(), '\0');
+                        std::fill(args[3].begin(), args[3].end(), '\0');
+                        args[3].clear();
                     }
                 } else {
-                    append_text("Usage: ssh <ALIAS>\n");
+                    append_text("Usage: ssh <ALIAS|HOSTNAME|IP> [PORT]\n");
+                    append_text("  Then enter username and password when prompted.\n");
                     append_text("Usage: ssh <HOST> <PORT> <USER> <PASS>\n");
                 }
             }
@@ -5166,7 +5288,8 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("    Protocol: BEGIN <size> <crc32hex>, DATA <hex>, END\n");
                 append_text("  serialtx <relative-path> - Send an SD file to local serial\n");
                 append_text("  ssh <ALIAS> - Resolve alias from ssh_config and connect via key\n");
-                append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
+                append_text("  ssh <HOSTNAME|IP> [PORT] - Prompt for username/password (not stored)\n");
+                append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH (password redacted)\n");
                 append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> - Connect via SSH with private key\n");
                 append_text("  reconnect - Reconnect the last SSH alias with host-key validation\n");
                 append_text("    Note: Place .pem keys in /sdcard/ssh_keys/ or /sd/ssh_keys/\n");
@@ -5221,7 +5344,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("Unknown command. Type 'help' for commands.\n");
             }
             
-            if (!handling_saved_wifi_prompt && !credential_bearing_command) {
+            if (!handling_saved_wifi_prompt && !handling_direct_ssh_prompt && !credential_bearing_command) {
                 auto it = std::find(command_history.begin(), command_history.end(), current_input);
                 if (it != command_history.end()) {
                     command_history.erase(it);
@@ -5229,9 +5352,13 @@ void SSHTerminal::handle_key_input(char key)
                 command_history.push_back(current_input);
                 history_needs_save = true;
             }
+            if (credential_bearing_command) {
+                std::fill(current_input.begin(), current_input.end(), '\0');
+            }
             current_input.clear();
             cursor_pos = 0;
             history_index = -1;
+            update_input_display();
         }
     } else if (key == 8 || key == 127) {
         // Backspace - delete character before cursor
@@ -5294,7 +5421,10 @@ void SSHTerminal::update_input_display()
     
     const char *prompt = ssh_connected ? "ssh> " : "> ";
     const size_t prompt_length = strlen(prompt);
-    std::string full_text = std::string(prompt) + current_input;
+    const std::string visible_input = local_input_sensitive
+        ? std::string(current_input.size(), '*')
+        : current_input;
+    std::string full_text = std::string(prompt) + visible_input;
     
     // Insert cursor at correct position
     if (cursor_visible) {

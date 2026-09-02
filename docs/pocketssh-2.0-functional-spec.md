@@ -23,6 +23,14 @@ Existing SD paths,
 profiles, NVS preferences, command history, status bar, and battery display
 remain compatible.
 
+Saved aliases are optional. `ssh <hostname-or-ip> [port]` attempts an alias
+first when one exists, otherwise opens a local username/password flow for the
+explicit address or DNS name. The password is masked while entered, held in
+RAM only for that one connection attempt, excluded from command history and
+NVS, and redacted from the local transcript. The explicit
+`ssh <host> <port> <user> <password>` form remains available with the same
+redaction and non-persistence guarantees.
+
 ### Remote terminal mode
 
 When an SSH shell opens, printable and control input is written to the SSH

@@ -16,6 +16,12 @@ starves the device UI task and triggers the watchdog.
 - OpenSSH-style host aliases from `/sdcard/ssh_keys/ssh_config`:
   - `connect <alias>`
   - `hosts`
+- Direct SSH is always available; a saved alias/key is optional:
+  - `ssh <hostname-or-ip> [port]` prompts for username then a masked,
+    RAM-only password.
+  - `ssh <host> <port> <user> <password>` accepts an explicit password form
+    with the password redacted from on-screen command echo and excluded from
+    command history.
 - Stored Wi-Fi profiles from `/sdcard/ssh_keys/wifi_config`:
   - `wifi`
   - `wifi <Network|SSID>`
@@ -42,7 +48,7 @@ starves the device UI task and triggers the watchdog.
     the device size and CRC agree.
   - Absolute paths, `.`/`..` traversal, backslashes, and control characters
     remain rejected. This is a physical local-console trust boundary: a local
-    operator could otherwise remove and modify the card directly.
+  operator could otherwise remove and modify the card directly.
 
 ## Build/Deploy Contract (T-Pager)
 - Packaged artifact name is `PocketSSH-TPager.bin`.
