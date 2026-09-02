@@ -21,6 +21,12 @@ def main() -> int:
     parser.add_argument("--remote-name", required=True, help="SD-relative source path")
     parser.add_argument("--output", required=True, help="Local destination, written only after CRC verification")
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--pre-wait",
+        type=float,
+        default=3.5,
+        help="Seconds to wait after opening USB serial before sending the request",
+    )
     args = parser.parse_args()
 
     output = pathlib.Path(args.output)
@@ -33,10 +39,21 @@ def main() -> int:
     data_re = re.compile(r"POCKETCTL serialtx_data ([0-9a-fA-F]+)")
     complete_re = re.compile(r"POCKETCTL serialtx_complete path=.* bytes=(\d+) crc=([0-9a-fA-F]{8})")
 
-    with serial.Serial(args.port, 115200, timeout=0.1, write_timeout=5) as ser:
-        ser.dtr = False
-        ser.rts = False
-        time.sleep(0.2)
+    # Set control lines before opening.  On USB-Serial/JTAG hardware, changing
+    # them after open can reset the target a second time and lose the request.
+    ser = serial.Serial()
+    ser.port = args.port
+    ser.baudrate = 115200
+    ser.timeout = 0.1
+    ser.write_timeout = 5
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    try:
+        # USB-Serial/JTAG opening resets the T-Pager.  Wait until its PocketSSH
+        # control task is running before sending the first (otherwise lost)
+        # request.  The subsequent timeout remains for the framed response.
+        time.sleep(max(0.0, args.pre_wait))
         ser.reset_input_buffer()
         ser.write(f"__pocketctl cmd serialtx {args.remote_name}\n".encode("utf-8"))
         ser.flush()
@@ -70,6 +87,8 @@ def main() -> int:
                     temporary.replace(output)
                     print(f"Verified {len(received)} bytes CRC32 {actual_crc:08x}: {output}")
                     return 0
+    finally:
+        ser.close()
     raise SystemExit("Timed out waiting for verified serialtx completion")
 
 

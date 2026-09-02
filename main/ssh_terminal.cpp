@@ -1805,11 +1805,17 @@ bool serial_send_sd_file(SSHTerminal *terminal, const std::string &target_name)
     if (terminal == nullptr) {
         return false;
     }
+    // These deliberately contain only the requested relative path and
+    // transfer metadata, never file data.  They make local serial SD reads
+    // diagnosable on the T-Pager's shared-display SPI bus.
+    ESP_LOGW(TAG, "POCKETCTL serialtx_stage path=%s stage=enter", target_name.c_str());
     ScopedSDMount mount_guard = {};
     if (!mount_guard.ok()) {
         terminal->append_text("serialtx: SD mount failed\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s reason=mount", target_name.c_str());
         return false;
     }
+    ESP_LOGW(TAG, "POCKETCTL serialtx_stage path=%s stage=mounted", target_name.c_str());
 #if defined(TDECKPLUS_TARGET)
     const char *root_dir = "/sdcard";
 #else
@@ -1819,25 +1825,32 @@ bool serial_send_sd_file(SSHTerminal *terminal, const std::string &target_name)
     std::string path;
     if (root_dir == nullptr || !resolve_serial_target_name(target_name, root_dir, &path)) {
         terminal->append_text("serialtx: invalid SD-relative path\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s reason=path", target_name.c_str());
         return false;
     }
     struct stat file_stat = {};
     if (stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
         terminal->append_text("serialtx: file not found\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s reason=not-found", target_name.c_str());
         return false;
     }
+    ESP_LOGW(TAG, "POCKETCTL serialtx_stage path=%s stage=stat bytes=%u", path.c_str(),
+             static_cast<unsigned>(file_stat.st_size));
 
     size_t expected_size = 0;
     uint32_t expected_crc = 0;
     if (!file_size_and_crc32(path, &expected_size, &expected_crc) ||
         expected_size != static_cast<size_t>(file_stat.st_size)) {
         terminal->append_text("serialtx: unable to verify source file\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s reason=verify", path.c_str());
         return false;
     }
+    ESP_LOGW(TAG, "POCKETCTL serialtx_stage path=%s stage=verified", path.c_str());
 
     FILE *file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) {
         terminal->append_text("serialtx: unable to open source file\n");
+        ESP_LOGW(TAG, "POCKETCTL serialtx_failed path=%s reason=open", path.c_str());
         return false;
     }
 
