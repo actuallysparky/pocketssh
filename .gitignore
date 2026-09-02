@@ -1,2 +1,21 @@
 .DS_Store
 main/include/tpager_test_hook_config_local.hpp
+
+# Local generated/build state
+.cache/
+.venv/
+.venv_serial/
+__pycache__/
+*.pyc
+build/
+build*/
+cmake-build-*/
+managed_components/
+sdkconfig
+sdkconfig.old
+_local/
+*.bin
+*.elf
+*.map
+*.o
+*.obj
