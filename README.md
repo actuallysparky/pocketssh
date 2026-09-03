@@ -25,6 +25,41 @@ T-Pager packages retain the `PocketSSH-TPager.bin` contract; T-Deck Plus package
 
 Building and packaging do not establish device runtime acceptance.
 
+## T-Pager streaming benchmark
+
+The T-Pager exposes content-free terminal timing snapshots through its existing
+USB control channel:
+
+```text
+__pocketctl perf reset
+__pocketctl perf snapshot
+```
+
+Use `misc/perf_benchmark.py --port <usb-port>` to run three 512 KiB scrolling
+trials against an already connected POSIX SSH shell. If opening USB resets the
+Pager, pass `--connect-command 'connect <saved-alias>'`; that command is never
+written to the benchmark summary, and direct credentials are rejected. Each
+snapshot includes receive-to-invalidation p95, draw/lock timing, and heap
+headroom. Results and raw serial logs are stored only under ignored
+`_local/benchmarks/`. Benchmarking, like flashing, remains separate from source
+validation and requires the normal device identity gate. A timeout is recorded
+as a partial, content-free trial in `summary.json` and returns a nonzero exit
+status; it does not discard the final telemetry sample.
+
+Each snapshot also emits one paired `POCKETCTL core` line with content-free
+parser and scroll operation counts. `perf_benchmark.py --workload` accepts
+only fixed `screen-fill`, `ascii-scroll`, and `ansi-utf8-scroll` workloads;
+it never accepts arbitrary remote commands. Run deterministic host-only core
+microbenchmarks with `./tests/run_terminal_core_benchmarks.sh`; results are
+also ignored under `_local/benchmarks/host/`.
+
+The paired `POCKETCTL transport` line adds socket-poll, channel-EAGAIN, flush,
+and display-update timing counters. For lab diagnosis only, T-Pager supports
+`__pocketctl perf repaint normal|deferred`; deferred mode continues SSH and
+terminal-core processing but defers receive-loop repainting. The benchmark
+helper exposes it as `--repaint-mode` and always restores normal mode after a
+trial or timeout. It is not an interactive terminal setting.
+
 ## Documentation
 
 - `docs/pocketssh-2.0-functional-spec.md` — T-Deck Plus terminal behavior and delivery contract.

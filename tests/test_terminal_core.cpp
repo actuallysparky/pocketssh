@@ -251,6 +251,63 @@ void test_less_alternate_screen_and_live_redraw_streams()
     assert(term.row(1)[0].codepoint == 'm');
 }
 
+void test_bursty_colored_utf8_scrollback_stream()
+{
+    TerminalCore term(16, 4, 32);
+    std::string burst;
+    burst.reserve(8192);
+    for (int index = 0; index < 256; ++index) {
+        burst += "\x1b[38;5;" + std::to_string(16 + (index % 216)) + "m";
+        burst += "row ";
+        burst += std::to_string(index);
+        burst += " ";
+        burst += "\xE2\x98\x83\x1b[0m\r\n";
+    }
+    for (size_t offset = 0; offset < burst.size();) {
+        const size_t chunk = std::min<size_t>(37, burst.size() - offset);
+        term.feed(burst.data() + offset, chunk);
+        offset += chunk;
+    }
+
+    assert(term.scrollback_size() == 32);
+    term.scroll_view(32);
+    assert(term.row(0)[0].codepoint == 'r');
+    assert(term.row(0)[5].codepoint >= '0' && term.row(0)[5].codepoint <= '9');
+    term.scroll_view(-32);
+    assert(term.scrollback_offset() == 0);
+    bool live_rows_retained = false;
+    for (size_t row = 0; row < term.rows(); ++row) {
+        live_rows_retained = live_rows_retained || term.row(row)[0].codepoint == 'r';
+    }
+    assert(live_rows_retained);
+}
+
+void test_scroll_regions_and_alternate_screen_preserve_rows()
+{
+    TerminalCore term(4, 4, 3);
+    const char normal[] = "T\r\nA\r\nB\r\nZ";
+    term.feed(normal, std::strlen(normal));
+    const char region_scroll[] = "\x1b[2;3r\x1b[3;1HX\r\nY";
+    term.feed(region_scroll, std::strlen(region_scroll));
+    assert(term.row(0)[0].codepoint == 'T');
+    assert(term.row(1)[0].codepoint == 'X');
+    assert(term.row(2)[0].codepoint == 'Y');
+    assert(term.row(3)[0].codepoint == 'Z');
+
+    const char alternate_scroll[] = "\x1b[?1049h\x1b[2;3r\x1b[3;1HM\r\nN";
+    term.feed(alternate_scroll, std::strlen(alternate_scroll));
+    assert(term.alternate_screen_active());
+    assert(term.row(1)[0].codepoint == 'M');
+    assert(term.row(2)[0].codepoint == 'N');
+    const char leave_alternate[] = "\x1b[?1049l";
+    term.feed(leave_alternate, std::strlen(leave_alternate));
+    assert(!term.alternate_screen_active());
+    assert(term.row(0)[0].codepoint == 'T');
+    assert(term.row(1)[0].codepoint == 'X');
+    assert(term.row(2)[0].codepoint == 'Y');
+    assert(term.row(3)[0].codepoint == 'Z');
+}
+
 }  // namespace
 
 int main()
@@ -265,6 +322,8 @@ int main()
     test_utf8_replacement_and_viewport_copy();
     test_erase_insert_and_resize();
     test_less_alternate_screen_and_live_redraw_streams();
+    test_bursty_colored_utf8_scrollback_stream();
+    test_scroll_regions_and_alternate_screen_preserve_rows();
     test_form_feed_clears_and_homes();
     test_ignored_control_sequences_are_bounded();
     test_host_key_policy();

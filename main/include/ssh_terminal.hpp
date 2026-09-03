@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -71,6 +72,14 @@ public:
     void try_boot_wifi_auto_connect();
     bool is_serial_rx_in_progress() const;
     void set_serial_rx_in_progress(bool in_progress);
+    // Content-free streaming telemetry for the T-Pager serial benchmark. The
+    // snapshot is intentionally text so target-specific control code does not
+    // need to know the internal counter layout.
+    void reset_performance_stats();
+    std::string performance_metrics_snapshot() const;
+    std::string core_performance_metrics_snapshot() const;
+    std::string transport_performance_metrics_snapshot() const;
+    void set_performance_repaint_deferred(bool deferred);
     
     lv_obj_t* get_screen() { return terminal_screen; }
     
@@ -167,6 +176,55 @@ private:
     QueueHandle_t ssh_input_queue;
     std::atomic<uint32_t> ssh_input_enqueued{0};
     std::atomic<uint32_t> ssh_input_written{0};
+
+    // These counters are updated by the SSH receive task and LVGL draw task.
+    // Keep them atomic and content-free: they are measurement data, not a
+    // second terminal transcript or a source of credentials in serial logs.
+    std::atomic<uint32_t> perf_reset_ms{0};
+    std::atomic<uint32_t> perf_first_rx_ms{0};
+    std::atomic<uint32_t> perf_last_rx_ms{0};
+    std::atomic<uint32_t> perf_pending_invalidation_rx_ms{0};
+    std::atomic<uint32_t> perf_rx_bytes{0};
+    std::atomic<uint32_t> perf_rx_chunks{0};
+    std::atomic<uint32_t> perf_receive_yields{0};
+    std::atomic<uint32_t> perf_feed_total_us{0};
+    std::atomic<uint32_t> perf_feed_max_us{0};
+    std::atomic<uint32_t> perf_repaint_requests{0};
+    std::atomic<uint32_t> perf_dirty_rows{0};
+    std::atomic<uint32_t> perf_invalidation_latency_samples{0};
+    std::atomic<uint32_t> perf_invalidation_latency_total_us{0};
+    std::atomic<uint32_t> perf_invalidation_latency_max_us{0};
+    // Five-millisecond buckets up to 300 ms, with the final bucket holding
+    // values at or above 300 ms. The snapshot reports the conservative upper
+    // edge of the p95 bucket without exposing terminal contents.
+    std::array<std::atomic<uint32_t>, 61> perf_invalidation_latency_histogram{};
+    std::atomic<uint32_t> perf_display_lock_successes{0};
+    std::atomic<uint32_t> perf_display_lock_timeouts{0};
+    std::atomic<uint32_t> perf_display_lock_wait_total_us{0};
+    std::atomic<uint32_t> perf_display_lock_wait_max_us{0};
+    std::atomic<uint32_t> perf_grid_draw_calls{0};
+    std::atomic<uint32_t> perf_grid_cells_examined{0};
+    std::atomic<uint32_t> perf_grid_cells_drawn{0};
+    std::atomic<uint32_t> perf_grid_draw_total_us{0};
+    std::atomic<uint32_t> perf_grid_draw_max_us{0};
+    std::atomic<uint32_t> perf_socket_readable_polls{0};
+    std::atomic<uint32_t> perf_socket_idle_polls{0};
+    std::atomic<uint32_t> perf_channel_eagain{0};
+    std::atomic<uint32_t> perf_active_flush_attempts{0};
+    std::atomic<uint32_t> perf_deferred_flushes{0};
+    std::atomic<uint32_t> perf_display_update_total_us{0};
+    std::atomic<uint32_t> perf_display_update_max_us{0};
+    std::atomic<bool> perf_repaint_deferred{false};
+    std::atomic<bool> perf_force_flush_requested{false};
+    std::atomic<uint32_t> perf_core_printable_bytes{0};
+    std::atomic<uint32_t> perf_core_control_bytes{0};
+    std::atomic<uint32_t> perf_core_utf8_bytes{0};
+    std::atomic<uint32_t> perf_core_utf8_codepoints{0};
+    std::atomic<uint32_t> perf_core_cell_writes{0};
+    std::atomic<uint32_t> perf_core_scroll_up_operations{0};
+    std::atomic<uint32_t> perf_core_scroll_down_operations{0};
+    std::atomic<uint32_t> perf_core_scrollback_row_copies{0};
+    std::atomic<uint32_t> perf_core_dirty_row_marks{0};
     
     char* hostname;
     int port_number;

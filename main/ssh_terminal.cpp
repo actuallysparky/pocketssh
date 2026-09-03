@@ -274,13 +274,23 @@ uint32_t xterm_palette_rgb(uint16_t color, uint32_t fallback)
     return fallback;
 }
 
-std::string terminal_cell_utf8(uint32_t codepoint)
+char terminal_cell_ascii(uint32_t codepoint)
 {
     // The fixed terminal fonts deliberately provide ASCII only.  Render every
     // unsupported scalar as a visible replacement glyph rather than allowing
     // LVGL's variable fallback to break the cell grid.
-    if (codepoint < 0x20 || codepoint > 0x7e) return "?";
-    return std::string(1, static_cast<char>(codepoint));
+    if (codepoint < 0x20 || codepoint > 0x7e) return '?';
+    return static_cast<char>(codepoint);
+}
+
+bool terminal_area_intersect(lv_area_t *result, const lv_area_t &first, const lv_area_t &second)
+{
+    if (result == nullptr) return false;
+    result->x1 = std::max(first.x1, second.x1);
+    result->y1 = std::max(first.y1, second.y1);
+    result->x2 = std::min(first.x2, second.x2);
+    result->y2 = std::min(first.y2, second.y2);
+    return result->x1 <= result->x2 && result->y1 <= result->y2;
 }
 
 constexpr uint32_t kTerminalBackground = 0x050806;
@@ -323,7 +333,59 @@ constexpr size_t kTerminalScrollbackBytes = 12288;
 constexpr size_t kTerminalAppendChunkBytes = 1024;
 constexpr size_t kTerminalIngressMaxBytes = 16384;
 constexpr size_t kTerminalIngressKeepBytes = 12288;
-constexpr int64_t kTerminalFlushIntervalMs = 250;
+// Active output needs prompt feedback. Idle polling remains deliberately
+// slower so an otherwise quiet SSH session does not continuously repaint the
+// terminal grid.
+constexpr int64_t kTerminalActiveFlushIntervalMs = 50;
+constexpr int64_t kTerminalIdleFlushIntervalMs = 250;
+constexpr size_t kReceiveFairnessBudgetBytes = 4096;
+constexpr int64_t kReceiveFairnessBudgetMs = 10;
+constexpr uint32_t kInvalidationLatencyBucketMs = 5;
+constexpr size_t kInvalidationLatencyBuckets = 61;
+
+uint32_t monotonic_ms()
+{
+    return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+}
+
+void atomic_add_saturating(std::atomic<uint32_t> &counter, uint32_t value)
+{
+    uint32_t observed = counter.load(std::memory_order_relaxed);
+    while (true) {
+        const uint32_t updated = observed > UINT32_MAX - value ? UINT32_MAX : observed + value;
+        if (counter.compare_exchange_weak(observed, updated, std::memory_order_relaxed)) return;
+    }
+}
+
+void atomic_record_max(std::atomic<uint32_t> &counter, uint32_t value)
+{
+    uint32_t observed = counter.load(std::memory_order_relaxed);
+    while (observed < value &&
+           !counter.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
+    }
+}
+
+uint32_t saturating_counter_delta(uint64_t after, uint64_t before)
+{
+    if (after <= before) return 0;
+    const uint64_t delta = after - before;
+    return static_cast<uint32_t>(std::min<uint64_t>(delta, UINT32_MAX));
+}
+
+uint32_t invalidation_latency_p95_ms(const std::array<std::atomic<uint32_t>, kInvalidationLatencyBuckets> &histogram,
+                                     uint32_t samples)
+{
+    if (samples == 0) return 0;
+    const uint32_t target = (samples * 95 + 99) / 100;
+    uint32_t cumulative = 0;
+    for (size_t index = 0; index < histogram.size(); ++index) {
+        cumulative += histogram[index].load(std::memory_order_relaxed);
+        if (cumulative >= target) {
+            return static_cast<uint32_t>((index + 1) * kInvalidationLatencyBucketMs);
+        }
+    }
+    return static_cast<uint32_t>(histogram.size() * kInvalidationLatencyBucketMs);
+}
 
 void log_heap_snapshot(const char *stage)
 {
@@ -4095,6 +4157,7 @@ SSHTerminal::SSHTerminal()
       terminal_selection_end_row(0),
       terminal_selection_end_col(0)
 {
+    reset_performance_stats();
 #if CONFIG_SPIRAM
     // Generic malloc keeps sub-4 KiB allocations internal on this ESP-IDF
     // configuration.  A complete 512-row history is made of many such rows,
@@ -4132,6 +4195,157 @@ SSHTerminal::SSHTerminal()
     }
     
     load_history_from_nvs();
+}
+
+void SSHTerminal::reset_performance_stats()
+{
+    perf_reset_ms.store(monotonic_ms(), std::memory_order_relaxed);
+    perf_first_rx_ms.store(0, std::memory_order_relaxed);
+    perf_last_rx_ms.store(0, std::memory_order_relaxed);
+    perf_pending_invalidation_rx_ms.store(0, std::memory_order_relaxed);
+    perf_rx_bytes.store(0, std::memory_order_relaxed);
+    perf_rx_chunks.store(0, std::memory_order_relaxed);
+    perf_receive_yields.store(0, std::memory_order_relaxed);
+    perf_feed_total_us.store(0, std::memory_order_relaxed);
+    perf_feed_max_us.store(0, std::memory_order_relaxed);
+    perf_repaint_requests.store(0, std::memory_order_relaxed);
+    perf_dirty_rows.store(0, std::memory_order_relaxed);
+    perf_invalidation_latency_samples.store(0, std::memory_order_relaxed);
+    perf_invalidation_latency_total_us.store(0, std::memory_order_relaxed);
+    perf_invalidation_latency_max_us.store(0, std::memory_order_relaxed);
+    for (auto &bucket : perf_invalidation_latency_histogram) {
+        bucket.store(0, std::memory_order_relaxed);
+    }
+    perf_display_lock_successes.store(0, std::memory_order_relaxed);
+    perf_display_lock_timeouts.store(0, std::memory_order_relaxed);
+    perf_display_lock_wait_total_us.store(0, std::memory_order_relaxed);
+    perf_display_lock_wait_max_us.store(0, std::memory_order_relaxed);
+    perf_grid_draw_calls.store(0, std::memory_order_relaxed);
+    perf_grid_cells_examined.store(0, std::memory_order_relaxed);
+    perf_grid_cells_drawn.store(0, std::memory_order_relaxed);
+    perf_grid_draw_total_us.store(0, std::memory_order_relaxed);
+    perf_grid_draw_max_us.store(0, std::memory_order_relaxed);
+    perf_socket_readable_polls.store(0, std::memory_order_relaxed);
+    perf_socket_idle_polls.store(0, std::memory_order_relaxed);
+    perf_channel_eagain.store(0, std::memory_order_relaxed);
+    perf_active_flush_attempts.store(0, std::memory_order_relaxed);
+    perf_deferred_flushes.store(0, std::memory_order_relaxed);
+    perf_display_update_total_us.store(0, std::memory_order_relaxed);
+    perf_display_update_max_us.store(0, std::memory_order_relaxed);
+    perf_core_printable_bytes.store(0, std::memory_order_relaxed);
+    perf_core_control_bytes.store(0, std::memory_order_relaxed);
+    perf_core_utf8_bytes.store(0, std::memory_order_relaxed);
+    perf_core_utf8_codepoints.store(0, std::memory_order_relaxed);
+    perf_core_cell_writes.store(0, std::memory_order_relaxed);
+    perf_core_scroll_up_operations.store(0, std::memory_order_relaxed);
+    perf_core_scroll_down_operations.store(0, std::memory_order_relaxed);
+    perf_core_scrollback_row_copies.store(0, std::memory_order_relaxed);
+    perf_core_dirty_row_marks.store(0, std::memory_order_relaxed);
+}
+
+std::string SSHTerminal::performance_metrics_snapshot() const
+{
+    const uint32_t reset_ms = perf_reset_ms.load(std::memory_order_relaxed);
+    const uint32_t first_rx_ms = perf_first_rx_ms.load(std::memory_order_relaxed);
+    const uint32_t last_rx_ms = perf_last_rx_ms.load(std::memory_order_relaxed);
+    const uint32_t elapsed_ms = monotonic_ms() - reset_ms;
+    const uint32_t active_ms = first_rx_ms == 0 || last_rx_ms < first_rx_ms ? 0 : last_rx_ms - first_rx_ms;
+    const uint32_t rx_bytes = perf_rx_bytes.load(std::memory_order_relaxed);
+    const uint32_t rx_bps = active_ms == 0 ? 0
+        : static_cast<uint32_t>((static_cast<uint64_t>(rx_bytes) * 1000) / active_ms);
+    const uint32_t invalidation_samples = perf_invalidation_latency_samples.load(std::memory_order_relaxed);
+    char line[768];
+    std::snprintf(
+        line, sizeof(line),
+        "POCKETCTL perf elapsed_ms=%" PRIu32 " active_ms=%" PRIu32 " rx_bytes=%" PRIu32
+        " rx_chunks=%" PRIu32 " rx_bps=%" PRIu32 " yields=%" PRIu32
+        " feed_us_total=%" PRIu32 " feed_us_max=%" PRIu32
+        " repaint=%" PRIu32 " dirty_rows=%" PRIu32
+        " rx_to_invalidate_samples=%" PRIu32 " rx_to_invalidate_us_total=%" PRIu32
+        " rx_to_invalidate_us_max=%" PRIu32 " rx_to_invalidate_p95_ms=%" PRIu32
+        " lock_ok=%" PRIu32 " lock_timeout=%" PRIu32 " lock_wait_us_total=%" PRIu32
+        " lock_wait_us_max=%" PRIu32 " draw_calls=%" PRIu32 " cells_examined=%" PRIu32
+        " cells_drawn=%" PRIu32 " draw_us_total=%" PRIu32 " draw_us_max=%" PRIu32
+        " heap_free=%" PRIu32 " heap_largest=%" PRIu32,
+        elapsed_ms, active_ms, rx_bytes,
+        perf_rx_chunks.load(std::memory_order_relaxed), rx_bps,
+        perf_receive_yields.load(std::memory_order_relaxed),
+        perf_feed_total_us.load(std::memory_order_relaxed), perf_feed_max_us.load(std::memory_order_relaxed),
+        perf_repaint_requests.load(std::memory_order_relaxed), perf_dirty_rows.load(std::memory_order_relaxed),
+        invalidation_samples,
+        perf_invalidation_latency_total_us.load(std::memory_order_relaxed),
+        perf_invalidation_latency_max_us.load(std::memory_order_relaxed),
+        invalidation_latency_p95_ms(perf_invalidation_latency_histogram, invalidation_samples),
+        perf_display_lock_successes.load(std::memory_order_relaxed),
+        perf_display_lock_timeouts.load(std::memory_order_relaxed),
+        perf_display_lock_wait_total_us.load(std::memory_order_relaxed),
+        perf_display_lock_wait_max_us.load(std::memory_order_relaxed),
+        perf_grid_draw_calls.load(std::memory_order_relaxed),
+        perf_grid_cells_examined.load(std::memory_order_relaxed),
+        perf_grid_cells_drawn.load(std::memory_order_relaxed),
+        perf_grid_draw_total_us.load(std::memory_order_relaxed),
+        perf_grid_draw_max_us.load(std::memory_order_relaxed),
+        static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    return line;
+}
+
+std::string SSHTerminal::core_performance_metrics_snapshot() const
+{
+    char line[512];
+    std::snprintf(
+        line, sizeof(line),
+        "POCKETCTL core printable_bytes=%" PRIu32 " control_bytes=%" PRIu32
+        " utf8_bytes=%" PRIu32 " utf8_codepoints=%" PRIu32
+        " cell_writes=%" PRIu32 " scroll_up_ops=%" PRIu32
+        " scroll_down_ops=%" PRIu32 " scrollback_row_copies=%" PRIu32
+        " dirty_row_marks=%" PRIu32,
+        perf_core_printable_bytes.load(std::memory_order_relaxed),
+        perf_core_control_bytes.load(std::memory_order_relaxed),
+        perf_core_utf8_bytes.load(std::memory_order_relaxed),
+        perf_core_utf8_codepoints.load(std::memory_order_relaxed),
+        perf_core_cell_writes.load(std::memory_order_relaxed),
+        perf_core_scroll_up_operations.load(std::memory_order_relaxed),
+        perf_core_scroll_down_operations.load(std::memory_order_relaxed),
+        perf_core_scrollback_row_copies.load(std::memory_order_relaxed),
+        perf_core_dirty_row_marks.load(std::memory_order_relaxed));
+    return line;
+}
+
+std::string SSHTerminal::transport_performance_metrics_snapshot() const
+{
+    const uint32_t last_rx_ms = perf_last_rx_ms.load(std::memory_order_relaxed);
+    const uint32_t reset_ms = perf_reset_ms.load(std::memory_order_relaxed);
+    const uint32_t now_ms = monotonic_ms();
+    const uint32_t rx_idle_ms = last_rx_ms == 0 ? now_ms - reset_ms : now_ms - last_rx_ms;
+    char line[512];
+    std::snprintf(
+        line, sizeof(line),
+        "POCKETCTL transport rx_idle_ms=%" PRIu32 " socket_readable_polls=%" PRIu32
+        " socket_idle_polls=%" PRIu32 " channel_eagain=%" PRIu32
+        " active_flush_attempts=%" PRIu32 " deferred_flushes=%" PRIu32
+        " display_update_us_total=%" PRIu32 " display_update_us_max=%" PRIu32
+        " repaint_deferred=%u",
+        rx_idle_ms,
+        perf_socket_readable_polls.load(std::memory_order_relaxed),
+        perf_socket_idle_polls.load(std::memory_order_relaxed),
+        perf_channel_eagain.load(std::memory_order_relaxed),
+        perf_active_flush_attempts.load(std::memory_order_relaxed),
+        perf_deferred_flushes.load(std::memory_order_relaxed),
+        perf_display_update_total_us.load(std::memory_order_relaxed),
+        perf_display_update_max_us.load(std::memory_order_relaxed),
+        perf_repaint_deferred.load(std::memory_order_relaxed) ? 1u : 0u);
+    return line;
+}
+
+void SSHTerminal::set_performance_repaint_deferred(bool deferred)
+{
+    perf_repaint_deferred.store(deferred, std::memory_order_relaxed);
+    if (!deferred) {
+        // The receive task owns normal output flushing. It observes this even
+        // if the remote is idle, avoiding a cross-task TerminalCore read.
+        perf_force_flush_requested.store(true, std::memory_order_relaxed);
+    }
 }
 
 SSHTerminal::~SSHTerminal() 
@@ -5137,7 +5351,7 @@ void SSHTerminal::handle_key_input(char key)
                 if (ssh_connected) {
                     append_text("serialtx unavailable during active SSH session\n");
                 } else {
-                    const std::vector<std::string> args = split_quoted_arguments(current_input, 2);
+                    const std::vector<std::string> args = split_quoted_arguments(current_input, 8);
                     const std::string target_name = args.empty() ? "" : args[0];
                     if (!serial_send_sd_file(this, target_name)) {
                         append_text("serialtx: failed\n");
@@ -5560,6 +5774,8 @@ void SSHTerminal::terminal_grid_draw_event_cb(lv_event_t* e)
 
     lv_area_t content = {};
     lv_obj_get_content_coords(grid, &content);
+    lv_area_t clip = {};
+    if (!terminal_area_intersect(&clip, content, layer->_clip_area)) return;
     const lv_font_t *font = terminal->terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
     const int cell_width = terminal_cell_width(font, terminal->terminal_font_big);
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
@@ -5569,58 +5785,102 @@ void SSHTerminal::terminal_grid_draw_event_cb(lv_event_t* e)
     row_dsc.bg_opa = LV_OPA_COVER;
     row_dsc.bg_color = lv_color_hex(kTerminalBackground);
 
-    for (size_t row = 0; row < terminal->terminal_core.rows(); ++row) {
+    const int64_t draw_started_us = esp_timer_get_time();
+    uint32_t cells_examined = 0;
+    uint32_t cells_drawn = 0;
+    const size_t rows = terminal->terminal_core.rows();
+    const size_t columns = terminal->terminal_core.columns();
+    const size_t first_row = std::min(rows, static_cast<size_t>(
+        std::max<lv_coord_t>(0, (clip.y1 - content.y1) / cell_height)));
+    const size_t last_row = std::min(rows, static_cast<size_t>(
+        std::max<lv_coord_t>(0, (clip.y2 - content.y1) / cell_height + 1)));
+    const size_t first_col = std::min(columns, static_cast<size_t>(
+        std::max<lv_coord_t>(0, (clip.x1 - content.x1) / cell_width)));
+    const size_t last_col = std::min(columns, static_cast<size_t>(
+        std::max<lv_coord_t>(0, (clip.x2 - content.x1) / cell_width + 1)));
+    const size_t selection_start = terminal->terminal_selection_start_row * columns +
+                                   terminal->terminal_selection_start_col;
+    const size_t selection_end = terminal->terminal_selection_end_row * columns +
+                                 terminal->terminal_selection_end_col;
+    const size_t selection_low = std::min(selection_start, selection_end);
+    const size_t selection_high = std::max(selection_start, selection_end);
+
+    for (size_t row = first_row; row < last_row; ++row) {
         lv_area_t row_area = {content.x1, static_cast<lv_coord_t>(content.y1 + row * cell_height),
                               content.x2, static_cast<lv_coord_t>(content.y1 + (row + 1) * cell_height - 1)};
         if (row_area.y1 > content.y2) break;
         row_area.y2 = std::min(row_area.y2, content.y2);
-        lv_draw_rect(layer, &row_dsc, &row_area);
+        lv_area_t visible_row = {};
+        if (!terminal_area_intersect(&visible_row, row_area, clip)) continue;
+        lv_draw_rect(layer, &row_dsc, &visible_row);
 
         const auto &cells = terminal->terminal_core.row(row);
-        for (size_t col = 0; col < cells.size(); ++col) {
-            const auto &cell = cells[col];
-            lv_area_t cell_area = {static_cast<lv_coord_t>(content.x1 + col * cell_width), row_area.y1,
-                                   static_cast<lv_coord_t>(content.x1 + (col + 1) * cell_width - 1), row_area.y2};
-            if (cell_area.x1 > content.x2) break;
-            cell_area.x2 = std::min(cell_area.x2, content.x2);
-
-            const uint32_t background = terminal_cell_background(cell, terminal->theme_color_hex);
-            if (background != kTerminalBackground) {
-                lv_draw_rect_dsc_t cell_dsc;
-                lv_draw_rect_dsc_init(&cell_dsc);
-                cell_dsc.bg_opa = LV_OPA_COVER;
-                cell_dsc.bg_color = lv_color_hex(background);
-                lv_draw_rect(layer, &cell_dsc, &cell_area);
-            }
-            if (terminal->terminal_grid_selection_active) {
-                const size_t start = terminal->terminal_selection_start_row * terminal->terminal_core.columns() +
-                                     terminal->terminal_selection_start_col;
-                const size_t end = terminal->terminal_selection_end_row * terminal->terminal_core.columns() +
-                                   terminal->terminal_selection_end_col;
-                const size_t position = row * terminal->terminal_core.columns() + col;
-                if (position >= std::min(start, end) && position <= std::max(start, end)) {
-                    lv_draw_rect_dsc_t selection_dsc;
-                    lv_draw_rect_dsc_init(&selection_dsc);
-                    selection_dsc.bg_opa = LV_OPA_COVER;
-                    selection_dsc.bg_color = lv_color_hex(0x255A76);
-                    lv_draw_rect(layer, &selection_dsc, &cell_area);
+        const size_t row_last_col = std::min(last_col, cells.size());
+        size_t col = first_col;
+        while (col < row_last_col) {
+            const auto &first = cells[col];
+            const size_t first_position = row * columns + col;
+            const bool selected = terminal->terminal_grid_selection_active &&
+                                  first_position >= selection_low && first_position <= selection_high;
+            const uint32_t foreground = terminal_cell_foreground(first, terminal->theme_color_hex);
+            const uint32_t background = selected ? 0x255A76 :
+                terminal_cell_background(first, terminal->theme_color_hex);
+            const uint8_t style = first.style;
+            std::string text;
+            text.reserve(row_last_col - col);
+            bool has_text = false;
+            size_t run_end = col;
+            for (; run_end < row_last_col; ++run_end) {
+                const auto &cell = cells[run_end];
+                const size_t position = row * columns + run_end;
+                const bool cell_selected = terminal->terminal_grid_selection_active &&
+                                           position >= selection_low && position <= selection_high;
+                const uint32_t cell_foreground = terminal_cell_foreground(cell, terminal->theme_color_hex);
+                const uint32_t cell_background = cell_selected ? 0x255A76 :
+                    terminal_cell_background(cell, terminal->theme_color_hex);
+                if (run_end != col && (cell.style != style || cell_foreground != foreground ||
+                                       cell_background != background)) {
+                    break;
                 }
+                ++cells_examined;
+                const char glyph = terminal_cell_ascii(cell.codepoint);
+                text.push_back(glyph);
+                has_text = has_text || glyph != ' ';
+                if (glyph != ' ') ++cells_drawn;
             }
-            if (cell.codepoint == ' ') continue;
 
-            const std::string glyph = terminal_cell_utf8(cell.codepoint);
+            lv_area_t run_area = {
+                static_cast<lv_coord_t>(content.x1 + col * cell_width), row_area.y1,
+                static_cast<lv_coord_t>(content.x1 + run_end * cell_width - 1), row_area.y2,
+            };
+            if (background != kTerminalBackground) {
+                lv_draw_rect_dsc_t run_dsc;
+                lv_draw_rect_dsc_init(&run_dsc);
+                run_dsc.bg_opa = LV_OPA_COVER;
+                run_dsc.bg_color = lv_color_hex(background);
+                lv_draw_rect(layer, &run_dsc, &run_area);
+            }
+            if (has_text) {
             lv_draw_label_dsc_t label_dsc;
             lv_draw_label_dsc_init(&label_dsc);
-            label_dsc.text = glyph.c_str();
+                label_dsc.text = text.c_str();
             label_dsc.text_local = 1;
             label_dsc.font = font;
-            label_dsc.color = lv_color_hex(terminal_cell_foreground(cell, terminal->theme_color_hex));
-            label_dsc.opa = (cell.style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER;
-            if (cell.style & pocketssh::CellStyleUnderline) label_dsc.decor = LV_TEXT_DECOR_UNDERLINE;
-            if (cell.style & pocketssh::CellStyleStrike) label_dsc.decor = static_cast<lv_text_decor_t>(label_dsc.decor | LV_TEXT_DECOR_STRIKETHROUGH);
-            lv_draw_label(layer, &label_dsc, &cell_area);
+                label_dsc.color = lv_color_hex(foreground);
+                label_dsc.opa = (style & pocketssh::CellStyleDim) ? LV_OPA_60 : LV_OPA_COVER;
+                if (style & pocketssh::CellStyleUnderline) label_dsc.decor = LV_TEXT_DECOR_UNDERLINE;
+                if (style & pocketssh::CellStyleStrike) label_dsc.decor = static_cast<lv_text_decor_t>(label_dsc.decor | LV_TEXT_DECOR_STRIKETHROUGH);
+                lv_draw_label(layer, &label_dsc, &run_area);
+            }
+            col = run_end;
         }
     }
+    const uint32_t draw_us = static_cast<uint32_t>(esp_timer_get_time() - draw_started_us);
+    atomic_add_saturating(terminal->perf_grid_draw_calls, 1);
+    atomic_add_saturating(terminal->perf_grid_cells_examined, cells_examined);
+    atomic_add_saturating(terminal->perf_grid_cells_drawn, cells_drawn);
+    atomic_add_saturating(terminal->perf_grid_draw_total_us, draw_us);
+    atomic_record_max(terminal->perf_grid_draw_max_us, draw_us);
 }
 
 void SSHTerminal::input_touch_event_cb(lv_event_t* e)
@@ -6897,6 +7157,8 @@ void SSHTerminal::ssh_receive_task(void* param)
     int64_t next_keepalive_ms = keepalive_interval_ms > 0
         ? (esp_timer_get_time() / 1000) + keepalive_interval_ms
         : 0;
+    size_t bytes_since_fairness_yield = 0;
+    int64_t fairness_window_started_ms = esp_timer_get_time() / 1000;
 
     while (terminal->ssh_connected && terminal->channel) {
         if (!terminal->ssh_connected || terminal->channel == nullptr) {
@@ -6905,6 +7167,10 @@ void SSHTerminal::ssh_receive_task(void* param)
         if (!logged_worker_entry) {
             ESP_LOGW(TAG, "ssh rx: session worker entered");
             logged_worker_entry = true;
+        }
+        if (terminal->perf_force_flush_requested.exchange(false, std::memory_order_relaxed) &&
+            !terminal->perf_repaint_deferred.load(std::memory_order_relaxed)) {
+            terminal->flush_display_buffer();
         }
         // Do not call channel_read() until the TCP socket is readable. On
         // this ESP32 libssh2 port a nominally nonblocking channel can still
@@ -6919,6 +7185,11 @@ void SSHTerminal::ssh_receive_task(void* param)
             const int select_rc = select(terminal->ssh_socket + 1, &readfds, nullptr, nullptr, &immediate);
             socket_readable = select_rc > 0 && FD_ISSET(terminal->ssh_socket, &readfds);
         }
+        if (socket_readable) {
+            atomic_add_saturating(terminal->perf_socket_readable_polls, 1);
+        } else {
+            atomic_add_saturating(terminal->perf_socket_idle_polls, 1);
+        }
         rc = terminal->ssh_connected && socket_readable
             ? libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1)
             : (terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT);
@@ -6931,9 +7202,22 @@ void SSHTerminal::ssh_receive_task(void* param)
         if (rc > 0) {
             buffer[rc] = '\0';
             terminal->process_received_data(buffer, rc);
-            vTaskDelay(1);
+            bytes_since_fairness_yield += static_cast<size_t>(rc);
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+            if (bytes_since_fairness_yield >= kReceiveFairnessBudgetBytes ||
+                now_ms - fairness_window_started_ms >= kReceiveFairnessBudgetMs) {
+                atomic_add_saturating(terminal->perf_receive_yields, 1);
+                vTaskDelay(pdMS_TO_TICKS(1));
+                bytes_since_fairness_yield = 0;
+                fairness_window_started_ms = esp_timer_get_time() / 1000;
+            }
         } else if (rc == LIBSSH2_ERROR_EAGAIN) {
-            terminal->flush_display_buffer();
+            atomic_add_saturating(terminal->perf_channel_eagain, 1);
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+            if (!terminal->perf_repaint_deferred.load(std::memory_order_relaxed) &&
+                now_ms - terminal->last_display_update >= kTerminalIdleFlushIntervalMs) {
+                terminal->flush_display_buffer();
+            }
             // Poll lightly while idle so physical keystrokes are serviced
             // promptly even when the remote has no output pending.
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -6944,7 +7228,9 @@ void SSHTerminal::ssh_receive_task(void* param)
 
         if (channel_eof) {
             ESP_LOGI(TAG, "Channel EOF");
-            terminal->flush_display_buffer();
+            if (!terminal->perf_repaint_deferred.load(std::memory_order_relaxed)) {
+                terminal->flush_display_buffer();
+            }
             break;
         }
 
@@ -6978,8 +7264,6 @@ void SSHTerminal::ssh_receive_task(void* param)
                 }
             }
         }
-        
-        vTaskDelay(1);
     }
 
     ESP_LOGW(TAG, "ssh rx: task ended");
@@ -7039,27 +7323,85 @@ void SSHTerminal::process_received_data(const char* data, size_t len)
         ESP_LOGI(TAG, "ssh rx: remote data received");
     }
 #endif
+    const uint32_t received_ms = monotonic_ms();
+    uint32_t no_first_rx = 0;
+    (void)perf_first_rx_ms.compare_exchange_strong(no_first_rx, received_ms, std::memory_order_relaxed);
+    perf_last_rx_ms.store(received_ms, std::memory_order_relaxed);
+    uint32_t no_pending_invalidation = 0;
+    (void)perf_pending_invalidation_rx_ms.compare_exchange_strong(
+        no_pending_invalidation, received_ms, std::memory_order_relaxed);
+    atomic_add_saturating(perf_rx_bytes, static_cast<uint32_t>(std::min(len, static_cast<size_t>(UINT32_MAX))));
+    atomic_add_saturating(perf_rx_chunks, 1);
     bytes_received += len;
+    const pocketssh::TerminalCorePerformanceCounters core_before = terminal_core.performance_counters();
+    const int64_t feed_started_us = esp_timer_get_time();
     terminal_core.feed(data, len);
+    const pocketssh::TerminalCorePerformanceCounters core_after = terminal_core.performance_counters();
+    const uint32_t feed_us = static_cast<uint32_t>(esp_timer_get_time() - feed_started_us);
+    atomic_add_saturating(perf_feed_total_us, feed_us);
+    atomic_record_max(perf_feed_max_us, feed_us);
+    atomic_add_saturating(perf_core_printable_bytes,
+                          saturating_counter_delta(core_after.printable_bytes, core_before.printable_bytes));
+    atomic_add_saturating(perf_core_control_bytes,
+                          saturating_counter_delta(core_after.control_bytes, core_before.control_bytes));
+    atomic_add_saturating(perf_core_utf8_bytes,
+                          saturating_counter_delta(core_after.utf8_bytes, core_before.utf8_bytes));
+    atomic_add_saturating(perf_core_utf8_codepoints,
+                          saturating_counter_delta(core_after.utf8_codepoints, core_before.utf8_codepoints));
+    atomic_add_saturating(perf_core_cell_writes,
+                          saturating_counter_delta(core_after.cell_writes, core_before.cell_writes));
+    atomic_add_saturating(perf_core_scroll_up_operations,
+                          saturating_counter_delta(core_after.scroll_up_operations, core_before.scroll_up_operations));
+    atomic_add_saturating(perf_core_scroll_down_operations,
+                          saturating_counter_delta(core_after.scroll_down_operations, core_before.scroll_down_operations));
+    atomic_add_saturating(perf_core_scrollback_row_copies,
+                          saturating_counter_delta(core_after.scrollback_row_copies, core_before.scrollback_row_copies));
+    atomic_add_saturating(perf_core_dirty_row_marks,
+                          saturating_counter_delta(core_after.dirty_row_marks, core_before.dirty_row_marks));
     
     int64_t current_time = esp_timer_get_time() / 1000;
     
-    if (current_time - last_display_update >= kTerminalFlushIntervalMs) {
-        flush_display_buffer();
+    if (current_time - last_display_update >= kTerminalActiveFlushIntervalMs) {
+        atomic_add_saturating(perf_active_flush_attempts, 1);
+        if (perf_repaint_deferred.load(std::memory_order_relaxed)) {
+            atomic_add_saturating(perf_deferred_flushes, 1);
+            // Retain the same cadence accounting while intentionally leaving
+            // dirty rows pending for the lab-only final repaint.
+            last_display_update = current_time;
+        } else {
+            flush_display_buffer();
+        }
     }
-    
-    vTaskDelay(1);
 }
 
 void SSHTerminal::flush_display_buffer()
 {
     if (ssh_connected) {
+        if (perf_repaint_deferred.load(std::memory_order_relaxed)) {
+            atomic_add_saturating(perf_deferred_flushes, 1);
+            last_display_update = esp_timer_get_time() / 1000;
+            return;
+        }
         // The receive task must not silently lose every repaint whenever LVGL
         // happens to be in a short input/layout transaction.  A bounded wait
         // preserves watchdog safety while letting SSH output become visible.
+        const int64_t lock_started_us = esp_timer_get_time();
         if (display_lock(50)) {
+            const uint32_t lock_wait_us = static_cast<uint32_t>(esp_timer_get_time() - lock_started_us);
+            atomic_add_saturating(perf_display_lock_successes, 1);
+            atomic_add_saturating(perf_display_lock_wait_total_us, lock_wait_us);
+            atomic_record_max(perf_display_lock_wait_max_us, lock_wait_us);
+            const int64_t update_started_us = esp_timer_get_time();
             update_terminal_display();
+            const uint32_t update_us = static_cast<uint32_t>(esp_timer_get_time() - update_started_us);
+            atomic_add_saturating(perf_display_update_total_us, update_us);
+            atomic_record_max(perf_display_update_max_us, update_us);
             display_unlock();
+        } else {
+            const uint32_t lock_wait_us = static_cast<uint32_t>(esp_timer_get_time() - lock_started_us);
+            atomic_add_saturating(perf_display_lock_timeouts, 1);
+            atomic_add_saturating(perf_display_lock_wait_total_us, lock_wait_us);
+            atomic_record_max(perf_display_lock_wait_max_us, lock_wait_us);
         }
         last_display_update = esp_timer_get_time() / 1000;
         return;
@@ -7427,6 +7769,7 @@ void SSHTerminal::update_terminal_display()
     lv_obj_get_content_coords(terminal_grid, &content);
     const lv_font_t *font = terminal_font_big ? ui_font_terminal_big() : ui_font_terminal_compact();
     const int cell_height = std::max(1, static_cast<int>(lv_font_get_line_height(font)));
+    uint32_t invalidated_rows = 0;
     for (size_t row = 0; row < terminal_core.rows(); ++row) {
         if (!terminal_core.row_dirty(row)) continue;
         lv_area_t dirty = {content.x1, static_cast<lv_coord_t>(content.y1 + row * cell_height),
@@ -7434,6 +7777,22 @@ void SSHTerminal::update_terminal_display()
         if (dirty.y1 <= content.y2) {
             dirty.y2 = std::min(dirty.y2, content.y2);
             lv_obj_invalidate_area(terminal_grid, &dirty);
+            ++invalidated_rows;
+        }
+    }
+    atomic_add_saturating(perf_repaint_requests, 1);
+    atomic_add_saturating(perf_dirty_rows, invalidated_rows);
+    if (invalidated_rows > 0) {
+        const uint32_t pending_rx_ms = perf_pending_invalidation_rx_ms.exchange(0, std::memory_order_relaxed);
+        if (pending_rx_ms != 0) {
+            const uint32_t latency_us = (monotonic_ms() - pending_rx_ms) * 1000;
+            const size_t bucket = std::min<size_t>(
+                latency_us / (kInvalidationLatencyBucketMs * 1000),
+                perf_invalidation_latency_histogram.size() - 1);
+            atomic_add_saturating(perf_invalidation_latency_samples, 1);
+            atomic_add_saturating(perf_invalidation_latency_total_us, latency_us);
+            atomic_record_max(perf_invalidation_latency_max_us, latency_us);
+            atomic_add_saturating(perf_invalidation_latency_histogram[bucket], 1);
         }
     }
     terminal_core.clear_dirty();

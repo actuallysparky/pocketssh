@@ -153,12 +153,16 @@ void TerminalCore::reset()
 
 void TerminalCore::mark_dirty(size_t row)
 {
-    if (row < dirty_rows_.size()) dirty_rows_[row] = true;
+    if (row < dirty_rows_.size()) {
+        dirty_rows_[row] = true;
+        ++performance_counters_.dirty_row_marks;
+    }
 }
 
 void TerminalCore::mark_all_dirty()
 {
     std::fill(dirty_rows_.begin(), dirty_rows_.end(), true);
+    performance_counters_.dirty_row_marks += dirty_rows_.size();
 }
 
 void TerminalCore::line_feed()
@@ -184,6 +188,7 @@ void TerminalCore::scroll_up(size_t count)
     auto &active = screen();
     count = std::min(count, scroll_bottom_ - scroll_top_ + 1);
     while (count--) {
+        ++performance_counters_.scroll_up_operations;
         if (!alternate_screen_active_ && scroll_top_ == 0) {
             if (scrollback_storage_ != nullptr && scrollback_storage_rows_ != 0) {
                 size_t destination = (scrollback_storage_head_ + scrollback_storage_size_) % scrollback_storage_rows_;
@@ -195,14 +200,20 @@ void TerminalCore::scroll_up(size_t count)
                 }
                 std::copy(active[scroll_top_].begin(), active[scroll_top_].end(),
                           scrollback_storage_ + destination * scrollback_storage_columns_);
+                ++performance_counters_.scrollback_row_copies;
             } else {
                 scrollback_.push_back(active[scroll_top_]);
                 if (scrollback_.size() > scrollback_limit_) scrollback_.erase(scrollback_.begin());
+                ++performance_counters_.scrollback_row_copies;
             }
             scrollback_offset_ = 0;
         }
-        for (size_t row = scroll_top_; row < scroll_bottom_; ++row) active[row] = active[row + 1];
-        active[scroll_bottom_] = blank_row();
+        // Move row ownership, not every TerminalCell. The departing row has
+        // already been copied to scrollback above; recycle its allocation as
+        // the new blank bottom row after rotating the visible region.
+        std::rotate(active.begin() + scroll_top_, active.begin() + scroll_top_ + 1,
+                    active.begin() + scroll_bottom_ + 1);
+        std::fill(active[scroll_bottom_].begin(), active[scroll_bottom_].end(), TerminalCell{});
     }
     for (size_t row = scroll_top_; row <= scroll_bottom_; ++row) mark_dirty(row);
 }
@@ -212,8 +223,10 @@ void TerminalCore::scroll_down(size_t count)
     auto &active = screen();
     count = std::min(count, scroll_bottom_ - scroll_top_ + 1);
     while (count--) {
-        for (size_t row = scroll_bottom_; row > scroll_top_; --row) active[row] = active[row - 1];
-        active[scroll_top_] = blank_row();
+        ++performance_counters_.scroll_down_operations;
+        std::rotate(active.begin() + scroll_top_, active.begin() + scroll_bottom_,
+                    active.begin() + scroll_bottom_ + 1);
+        std::fill(active[scroll_top_].begin(), active[scroll_top_].end(), TerminalCell{});
     }
     for (size_t row = scroll_top_; row <= scroll_bottom_; ++row) mark_dirty(row);
 }
@@ -227,6 +240,7 @@ void TerminalCore::put_codepoint(uint32_t codepoint)
     auto &cell = screen()[cursor_row_][cursor_col_];
     cell = attributes_;
     cell.codepoint = codepoint;
+    ++performance_counters_.cell_writes;
     mark_dirty(cursor_row_);
     ++cursor_col_;
 }
@@ -441,47 +455,83 @@ void TerminalCore::feed(const char *bytes, size_t length)
     for (size_t i = 0; i < length; ++i) {
         const unsigned char byte = static_cast<unsigned char>(bytes[i]);
         if (parser_state_ == ParserState::Utf8) {
+            ++performance_counters_.utf8_bytes;
             if ((byte & 0xC0) == 0x80) {
                 utf8_codepoint_ = (utf8_codepoint_ << 6) | (byte & 0x3F);
-                if (--utf8_remaining_ == 0) { put_codepoint(utf8_codepoint_); parser_state_ = ParserState::Ground; }
-            } else { put_codepoint(0xFFFD); parser_state_ = ParserState::Ground; --i; }
+                if (--utf8_remaining_ == 0) {
+                    put_codepoint(utf8_codepoint_);
+                    ++performance_counters_.utf8_codepoints;
+                    parser_state_ = ParserState::Ground;
+                }
+            } else {
+                put_codepoint(0xFFFD);
+                ++performance_counters_.utf8_codepoints;
+                parser_state_ = ParserState::Ground;
+                --i;
+            }
             continue;
         }
         if (parser_state_ == ParserState::Osc) {
+            ++performance_counters_.control_bytes;
             if (byte == 0x07) parser_state_ = ParserState::Ground;
             else if (byte == 0x1B) parser_state_ = ParserState::OscEscape;
             else if (++osc_length_ > kMaxControlSequence) parser_state_ = ParserState::Ground;
             continue;
         }
-        if (parser_state_ == ParserState::OscEscape) { parser_state_ = byte == '\\' ? ParserState::Ground : ParserState::Osc; continue; }
+        if (parser_state_ == ParserState::OscEscape) {
+            ++performance_counters_.control_bytes;
+            parser_state_ = byte == '\\' ? ParserState::Ground : ParserState::Osc;
+            continue;
+        }
         if (parser_state_ == ParserState::Escape) {
+            ++performance_counters_.control_bytes;
             if (byte == '[') { csi_buffer_.clear(); parser_state_ = ParserState::Csi; }
             else if (byte == ']') { osc_length_ = 0; parser_state_ = ParserState::Osc; }
             else { if (byte == 'D') line_feed(); else if (byte == 'M') reverse_index(); else if (byte == '7') { saved_row_ = cursor_row_; saved_col_ = cursor_col_; } else if (byte == '8') { cursor_row_ = saved_row_; cursor_col_ = saved_col_; } parser_state_ = ParserState::Ground; }
             continue;
         }
         if (parser_state_ == ParserState::Csi) {
+            ++performance_counters_.control_bytes;
             if (byte >= 0x40 && byte <= 0x7E) { execute_csi(static_cast<char>(byte)); parser_state_ = ParserState::Ground; }
             else if (csi_buffer_.size() < kMaxControlSequence) csi_buffer_.push_back(static_cast<char>(byte));
             else parser_state_ = ParserState::CsiDiscard;
             continue;
         }
         if (parser_state_ == ParserState::CsiDiscard) {
+            ++performance_counters_.control_bytes;
             if (byte >= 0x40 && byte <= 0x7E) parser_state_ = ParserState::Ground;
             continue;
         }
-        if (byte == 0x1B) { parser_state_ = ParserState::Escape; continue; }
-        if (byte == '\r') { cursor_col_ = 0; continue; }
-        if (byte == '\n') { line_feed(); continue; }
-        if (byte == '\f') { erase_in_display(2); cursor_row_ = cursor_col_ = 0; continue; }
-        if (byte == '\b') { if (cursor_col_ > 0) --cursor_col_; continue; }
-        if (byte == '\t') { cursor_col_ = std::min(columns_ - 1, ((cursor_col_ / 8) + 1) * 8); continue; }
-        if (byte < 0x20 || byte == 0x7F) continue;
-        if (byte < 0x80) put_codepoint(byte);
-        else if ((byte & 0xE0) == 0xC0) { utf8_codepoint_ = byte & 0x1F; utf8_remaining_ = 1; parser_state_ = ParserState::Utf8; }
-        else if ((byte & 0xF0) == 0xE0) { utf8_codepoint_ = byte & 0x0F; utf8_remaining_ = 2; parser_state_ = ParserState::Utf8; }
-        else if ((byte & 0xF8) == 0xF0) { utf8_codepoint_ = byte & 0x07; utf8_remaining_ = 3; parser_state_ = ParserState::Utf8; }
-        else put_codepoint(0xFFFD);
+        if (byte == 0x1B) { ++performance_counters_.control_bytes; parser_state_ = ParserState::Escape; continue; }
+        if (byte == '\r') { ++performance_counters_.control_bytes; cursor_col_ = 0; continue; }
+        if (byte == '\n') { ++performance_counters_.control_bytes; line_feed(); continue; }
+        if (byte == '\f') { ++performance_counters_.control_bytes; erase_in_display(2); cursor_row_ = cursor_col_ = 0; continue; }
+        if (byte == '\b') { ++performance_counters_.control_bytes; if (cursor_col_ > 0) --cursor_col_; continue; }
+        if (byte == '\t') { ++performance_counters_.control_bytes; cursor_col_ = std::min(columns_ - 1, ((cursor_col_ / 8) + 1) * 8); continue; }
+        if (byte < 0x20 || byte == 0x7F) { ++performance_counters_.control_bytes; continue; }
+        if (byte < 0x80) {
+            ++performance_counters_.printable_bytes;
+            put_codepoint(byte);
+        } else if ((byte & 0xE0) == 0xC0) {
+            ++performance_counters_.utf8_bytes;
+            utf8_codepoint_ = byte & 0x1F;
+            utf8_remaining_ = 1;
+            parser_state_ = ParserState::Utf8;
+        } else if ((byte & 0xF0) == 0xE0) {
+            ++performance_counters_.utf8_bytes;
+            utf8_codepoint_ = byte & 0x0F;
+            utf8_remaining_ = 2;
+            parser_state_ = ParserState::Utf8;
+        } else if ((byte & 0xF8) == 0xF0) {
+            ++performance_counters_.utf8_bytes;
+            utf8_codepoint_ = byte & 0x07;
+            utf8_remaining_ = 3;
+            parser_state_ = ParserState::Utf8;
+        } else {
+            ++performance_counters_.utf8_bytes;
+            ++performance_counters_.utf8_codepoints;
+            put_codepoint(0xFFFD);
+        }
     }
 }
 

@@ -341,6 +341,38 @@ void handle_serial_control_line(const std::string &raw_line)
         return;
     }
 
+    if (payload == "perf reset") {
+        if (g_terminal == nullptr) {
+            ESP_LOGW(kTag, "POCKETCTL perf unavailable");
+        } else {
+            g_terminal->reset_performance_stats();
+            ESP_LOGI(kTag, "POCKETCTL perf reset");
+        }
+        return;
+    }
+
+    if (payload == "perf snapshot") {
+        if (g_terminal == nullptr) {
+            ESP_LOGW(kTag, "POCKETCTL perf unavailable");
+        } else {
+            ESP_LOGI(kTag, "%s", g_terminal->performance_metrics_snapshot().c_str());
+            ESP_LOGI(kTag, "%s", g_terminal->core_performance_metrics_snapshot().c_str());
+            ESP_LOGI(kTag, "%s", g_terminal->transport_performance_metrics_snapshot().c_str());
+        }
+        return;
+    }
+
+    if (payload == "perf repaint deferred" || payload == "perf repaint normal") {
+        if (g_terminal == nullptr) {
+            ESP_LOGW(kTag, "POCKETCTL perf unavailable");
+        } else {
+            const bool deferred = payload == "perf repaint deferred";
+            g_terminal->set_performance_repaint_deferred(deferred);
+            ESP_LOGI(kTag, "POCKETCTL perf repaint=%s", deferred ? "deferred" : "normal");
+        }
+        return;
+    }
+
     if (payload == "serialrx" || starts_with_ascii(payload, "serialrx ")) {
         ESP_LOGI(kTag, "POCKETCTL run: %s", payload.c_str());
         inject_terminal_command(payload);

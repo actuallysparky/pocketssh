@@ -26,6 +26,21 @@ struct TerminalCell {
     uint8_t style = CellStyleNone;
 };
 
+// Content-free operation counters. The core updates these in its single
+// caller context; SSHTerminal snapshots per-feed deltas into atomic device
+// telemetry for cross-task serial reporting.
+struct TerminalCorePerformanceCounters {
+    uint64_t printable_bytes = 0;
+    uint64_t control_bytes = 0;
+    uint64_t utf8_bytes = 0;
+    uint64_t utf8_codepoints = 0;
+    uint64_t cell_writes = 0;
+    uint64_t scroll_up_operations = 0;
+    uint64_t scroll_down_operations = 0;
+    uint64_t scrollback_row_copies = 0;
+    uint64_t dirty_row_marks = 0;
+};
+
 enum class KeyCode : uint8_t {
     Character, Enter, Backspace, Tab, Escape, Up, Down, Right, Left, Home,
     End, PageUp, PageDown, Insert, Delete, F1, F2, F3, F4, F5, F6, F7, F8,
@@ -70,6 +85,7 @@ public:
     // Embedded callers use this to place the large history allocation in
     // PSRAM instead of relying on many small general-heap allocations.
     void configure_scrollback_storage(TerminalCell *storage, size_t capacity_rows, size_t storage_columns);
+    TerminalCorePerformanceCounters performance_counters() const { return performance_counters_; }
 
 private:
     enum class ParserState : uint8_t { Ground, Escape, Csi, CsiDiscard, Osc, OscEscape, Utf8 };
@@ -108,6 +124,7 @@ private:
     size_t osc_length_ = 0;
     uint32_t utf8_codepoint_ = 0;
     uint8_t utf8_remaining_ = 0;
+    TerminalCorePerformanceCounters performance_counters_;
 
     std::vector<std::vector<TerminalCell>> &screen();
     const std::vector<std::vector<TerminalCell>> &screen() const;
