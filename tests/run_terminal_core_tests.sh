@@ -12,3 +12,4 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic \
   "${script_dir}/test_terminal_core.cpp" \
   -o "${work_dir}/terminal_core_tests"
 "${work_dir}/terminal_core_tests"
+"${script_dir}/test_build_package_contract.sh"
