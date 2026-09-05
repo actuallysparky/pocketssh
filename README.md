@@ -69,7 +69,7 @@ remains parseable. `host_elapsed_ms` includes the final quiet period; `rx_bps`
 remains an active-window metric. Queue/receive quiescence does not report the
 remote process exit status. Optionally use `--idle-probe-seconds 45` to sample
 an idle session after completed trials and then verify a fixed `screen-fill`
-workload response in that same session. Watchdog, panic, brownout, SSH EOF,
+workload response in that same session. Mid-run boot/reset, watchdog, panic, brownout, SSH EOF,
 read-error, and receive-task exit markers reject the run and stop further
 workloads. Faults and interruptions retain available evidence in the summary;
 exit codes are 2 for timeout, 3 for fault, and 130 for interruption.

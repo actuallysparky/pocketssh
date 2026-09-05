@@ -203,6 +203,12 @@ class PerfBenchmarkParserTests(unittest.TestCase):
             trial.assert_called_once()
             self.assertEqual(json.loads((output / "summary.json").read_text())["outcome"], "fault")
 
+    def test_mid_trial_usb_reset_is_rejected(self) -> None:
+        state = {"fault_tracking": True}
+        self.assertTrue(perf_benchmark.record_faults("ESP-ROM:esp32s3-20210327", state))
+        self.assertTrue(perf_benchmark.record_faults("rst:0x15 (USB_UART_CHIP_RESET)", state))
+        self.assertEqual(state["fault_counts"], {"device_reset": 1, "usb_reset": 1})
+
     def test_workloads_remain_fixed(self) -> None:
         command, target = perf_benchmark.workload_command("screen-fill", 999)
         self.assertEqual(target, 512)

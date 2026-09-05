@@ -133,6 +133,8 @@ def consume_metric_line(line: str, state: dict[str, object]) -> dict[str, int] |
 
 
 FAULT_PATTERNS = {
+    "device_reset": re.compile(r"ESP-ROM:", re.I),
+    "usb_reset": re.compile(r"USB_UART_CHIP_RESET", re.I),
     "watchdog": re.compile(r"Task watchdog got triggered", re.I),
     "panic": re.compile(r"Guru Meditation Error|panic'ed|abort\(\) was called", re.I),
     "brownout": re.compile(r"Brownout detector was triggered", re.I),

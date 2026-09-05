@@ -338,3 +338,95 @@ the nonzero-tick candidate; they do not establish its watchdog/runtime safety.
 - Round-5 `tpager`: 1,770,160 bytes, SHA-256 `75f49d7a46db8bf9a221a2c4794e32acb0d80ad63a64c56ba8ade6550a181ffb`.
 
 - Round-5 `tdeckplus`: 4,247,504 bytes, SHA-256 `9eba22ac8cccb7657ccef4cdce3b43d0c81667ce91e66365f0bb0247fc8c949a`.
+
+## 2026-09-04T18:34:29-07:00 — Round 5: sustained receive and idle response validated
+
+The installed T-Pager image is SHA-256
+`75f49d7a46db8bf9a221a2c4794e32acb0d80ad63a64c56ba8ade6550a181ffb`,
+1,770,160 bytes, corresponding to the C++ changes in local commit `fa6b98d`.
+Fresh receipt `4d80b465-2aaf-4d32-819b-71270f5b8be5` verified MAC
+`10:20:ba:33:fa:9c` and the live Launcher Slot A; the broker wrote and verified
+only `pocket` at `0x1A0000`. Both targets retain 100 Hz RTOS ticks and the
+unchanged five-second task-watchdog timeout. T-Deck Plus was built/packaged,
+not flashed during this performance investigation.
+
+| Comparison | Producer workload / result | Received bytes | Time | Active RX B/s | Feed total / peak | p95 invalidate | Lock timeouts |
+| --- | --- | ---: | --- | ---: | --- | ---: | ---: |
+| Initial | 512 KiB / single timeout | 164,010 | 300 s ceiling | 3,069 | not retained / 300 ms | 305 ms | 11 |
+| Prior row rotation | 512 KiB / single timeout | 164,727 | 300 s ceiling | 12,906 | 7.41 s / 52 ms | 240 ms | 66 |
+| Round-3 diagnostic | 32 KiB / single timeout | 24,719 | 90.140 s; 87.311 s idle | 9,875 | 1.124 s / 51.057 ms | 305 ms | 7 |
+| Final short gate | 32 KiB / 3 drained trials | 49,327 each | 6.406 s median host elapsed | 10,737 median | 2.178 s / 50.995 ms median | 190 ms median | 18 median |
+| Final canonical streams | 512 KiB / 3 drained trials | 786,608 each | 61.368 s median host elapsed | 13,145 median | 34.106 s / 52.427 ms median | 200 ms median | 319 median |
+| Final ANSI/UTF-8 | 53,248 B / 3 drained trials | 57,603 each | 4.332 s median host elapsed | 22,011 median | 0.736 s / 16.796 ms median | 165 ms median | 5 median |
+
+Final times include the one-second quiet criterion and host sampling cadence.
+Received terminal bytes include PTY newline expansion and shell overhead, so
+they differ from producer payload size. `rx_bps` still measures the active
+receive window; no multiplier against a censored timeout is an end-to-end
+throughput claim. The original and final total-work timings cover different
+received amounts, so total feed/draw time is not a like-for-like CPU comparison.
+
+Canonical host elapsed times were 61.436/61.368/61.158 seconds. Each trial ended
+with a zero queued-byte sample and 1.362/1.612/1.072 seconds receive idle. Read
+calls were 772/771/772 against only 161/161/164 readable-socket polls; the
+remaining calls consumed buffered standard-channel data. All read calls were
+positive: zero actual EAGAIN, channel read errors, and EOF-path returns. No
+watchdog, panic, brownout, or disconnect marker occurred during these three
+streaming trials. Median drawing total/max were 13.600 s/57.056 ms over a
+complete stream; final heap free was 7,882,783–7,882,875 bytes, with a largest
+block of 7,733,248 bytes. These observations validate the queued-read fix and
+real-tick fairness under the canonical load without relaxing safety limits.
+
+### USB interference and the separate idle acceptance check
+
+The canonical helper's overall summary remains `outcome=timeout`, with all
+three stream trials marked drained. Its subsequent idle probe lost telemetry
+after 26.612 seconds of receive idle. Raw serial then reports
+`USB_UART_CHIP_RESET`, download mode, and esptool-style synchronization bytes.
+The saved PC resolves to `esp_cpu_wait_for_intr`. Broker audit timestamps show
+overlapping other-device operations near the last live metric, consistent with
+a competing host operation resetting the port. This was not a watchdog reset,
+and that post-idle probe is invalid rather than passed. Its original summary
+and raw log were preserved unchanged under `_local/benchmarks/round5-normal512k/`.
+
+A proposed host `TIOCEXCL` protection was rejected when a local pseudoterminal
+experiment still allowed a second opener; neither that prototype nor its claim
+of enforced isolation was shipped. The benchmark now detects mid-run ROM boot
+and USB-reset markers as explicit faults, covered by a regression test. It does
+not claim to prevent competing device operations. No broker/registry policy was
+changed. Fresh targeted receipt `36c3b6bb-447b-4a9c-94d8-7b8cc785674b` verified
+and restarted the same Pager without another firmware write.
+
+On the unchanged repaired image, all three fixed ANSI/UTF-8 trials then drained
+57,603 bytes each and recorded exactly 4,096 UTF-8 code points each. That same
+session passed a 45-second idle probe with 43 complete snapshots: queue zero,
+read calls fixed at 59, final receive idle 46.402 seconds, and no fault markers.
+The fixed post-idle screen-fill command returned 711 terminal bytes and drained
+in 2.296 seconds including the quiet criterion, with no display-lock timeout.
+This proves same-session command/receive response after idle; it is not a visual
+cell-render or remote process-exit-status assertion. Normal repaint restoration
+was acknowledged, and final broker ownership inspection found no serial owner.
+Raw/JSON evidence: `_local/benchmarks/round5-ansi-idle/`.
+
+### Validation and remaining limits
+
+Final host validation passed all 15 Python tests, byte compilation, terminal-core
+and wrapper tests, and whitespace checks. The reset test was added after the
+14-test fault/restoration suite; replaying the known failing capture detected
+all nine watchdog events. Both target builds and package byte readback passed
+for the installed C++ source; the subsequent changes are host parser/tests/docs
+only. Eleven-run core medians in `_local/benchmarks/host/20260905T010901Z/` were
+3,913 screen-fill, 7,752 ASCII-scroll, 7,887 ANSI/UTF-8-scroll, and 20 viewport
+us/MiB; these are validation measurements, not another core optimization.
+
+The residual receive stall and sustained-load watchdog starvation are addressed.
+Saturated display latency/lock contention remains measurable: 185–205 ms p95
+and 308–328 lock timeouts over each complete canonical stream. The older 60 ms
+latency target is not met; no renderer/display-worker or subjective UI-acceptance
+claim is made. Terminal semantics, ANSI/UTF-8, scrollback, storage model, LCD/DMA,
+SSH settings and Wi-Fi configuration were preserved. Source, builds, flash/hash,
+streaming tests, idle response and physical/UI experience remain distinct claims.
+
+- Final `tpager` package: 1,770,160 bytes, SHA-256 `75f49d7a46db8bf9a221a2c4794e32acb0d80ad63a64c56ba8ade6550a181ffb`.
+
+- Final `tdeckplus` package: 4,247,504 bytes, SHA-256 `9eba22ac8cccb7657ccef4cdce3b43d0c81667ce91e66365f0bb0247fc8c949a`.
