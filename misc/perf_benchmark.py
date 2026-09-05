@@ -29,6 +29,38 @@ PERF_RE = re.compile(r"POCKETCTL perf (?P<fields>(?:[a-z0-9_]+=[0-9]+ ?)+)")
 CORE_RE = re.compile(r"POCKETCTL core (?P<fields>(?:[a-z0-9_]+=[0-9]+ ?)+)")
 TRANSPORT_RE = re.compile(r"POCKETCTL transport (?P<fields>(?:[a-z0-9_]+=[0-9]+ ?)+)")
 
+# Version 4 extensions are all-or-nothing; legacy schema-3 groups remain readable.
+TRANSPORT_V4_FIELDS = (
+    'select_ready',
+    'select_timeout',
+    'select_error',
+    'select_no_fd',
+    'select_skipped',
+    'read_calls',
+    'read_positive',
+    'read_bytes',
+    'read_eagain_ready',
+    'read_eagain_idle',
+    'read_skipped_idle',
+    'read_zero',
+    'errors_socket_recv',
+    'errors_socket_send',
+    'errors_socket_disconnect',
+    'errors_channel_closed',
+    'errors_other',
+    'eagain_block_none',
+    'eagain_block_in',
+    'eagain_block_out',
+    'eagain_block_both',
+    'window_samples',
+    'window_last',
+    'window_initial',
+    'queued_last',
+    'queued_max',
+    'idle_queued_samples',
+)
+
+
 # These are deliberately fixed POSIX-shell workloads. The host never accepts
 # an arbitrary remote command, and the payload itself is uninteresting test
 # text rather than user/session content.
@@ -80,6 +112,13 @@ def consume_metric_line(line: str, state: dict[str, object]) -> dict[str, int] |
         return None
     transport = parse_metric_line(TRANSPORT_RE, line)
     if transport is None:
+        return None
+    version = transport.get("transport_version")
+    extension_present = any(key in transport for key in TRANSPORT_V4_FIELDS)
+    if (version is not None or extension_present) and (
+        version != 4 or transport.get("transport_complete") != 4 or not all(key in transport for key in TRANSPORT_V4_FIELDS)
+    ):
+        state["pending_metrics"] = None
         return None
     pending["transport"] = transport
     if not all(isinstance(pending.get(name), dict) for name in ("perf", "core", "transport")):
@@ -231,8 +270,10 @@ def main() -> int:
         "transport_channel_eagain", "transport_active_flush_attempts", "transport_deferred_flushes",
         "transport_display_update_us_total", "transport_display_update_us_max",
     )
+    key_metrics += tuple(f"transport_{key}" for key in TRANSPORT_V4_FIELDS)
     summary = {
-        "schema": 3,
+        "schema": 4,
+        "transport_versions": sorted({trial.get("transport_transport_version", 3) for trial in trials}),
         "target": "tpager",
         "workload": args.workload,
         "repaint_mode": args.repaint_mode,
@@ -240,7 +281,8 @@ def main() -> int:
         "outcome": "timeout" if timed_out else "completed",
         "completed_trials": sum(1 for trial in trials if trial.get("timed_out", 0) == 0),
         "trials": trials,
-        "median": {key: median([trial.get(key, 0) for trial in trials]) for key in key_metrics},
+        "median": {key: median([trial[key] for trial in trials]) for key in key_metrics
+                   if trials and all(key in trial for trial in trials)},
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"saved raw log: {raw_path}")

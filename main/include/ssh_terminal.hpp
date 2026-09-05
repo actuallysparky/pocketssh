@@ -209,7 +209,36 @@ private:
     std::atomic<uint32_t> perf_grid_draw_max_us{0};
     std::atomic<uint32_t> perf_socket_readable_polls{0};
     std::atomic<uint32_t> perf_socket_idle_polls{0};
+    // Legacy channel_eagain includes synthetic idle outcomes; retain its meaning.
     std::atomic<uint32_t> perf_channel_eagain{0};
+    std::atomic<uint32_t> perf_select_ready{0};
+    std::atomic<uint32_t> perf_select_timeout{0};
+    std::atomic<uint32_t> perf_select_error{0};
+    std::atomic<uint32_t> perf_select_no_fd{0};
+    std::atomic<uint32_t> perf_select_skipped{0};
+    std::atomic<uint32_t> perf_read_calls{0};
+    std::atomic<uint32_t> perf_read_positive{0};
+    std::atomic<uint32_t> perf_read_bytes{0};
+    std::atomic<uint32_t> perf_read_eagain_ready{0};
+    std::atomic<uint32_t> perf_read_eagain_idle{0};
+    std::atomic<uint32_t> perf_read_skipped_idle{0};
+    std::atomic<uint32_t> perf_read_zero{0};
+    std::atomic<uint32_t> perf_errors_socket_recv{0};
+    std::atomic<uint32_t> perf_errors_socket_send{0};
+    std::atomic<uint32_t> perf_errors_socket_disconnect{0};
+    std::atomic<uint32_t> perf_errors_channel_closed{0};
+    std::atomic<uint32_t> perf_errors_other{0};
+    std::atomic<uint32_t> perf_eagain_block_none{0};
+    std::atomic<uint32_t> perf_eagain_block_in{0};
+    std::atomic<uint32_t> perf_eagain_block_out{0};
+    std::atomic<uint32_t> perf_eagain_block_both{0};
+    std::atomic<uint32_t> perf_window_samples{0};
+    std::atomic<uint32_t> perf_window_last{0};
+    std::atomic<uint32_t> perf_window_initial{0};
+    std::atomic<uint32_t> perf_queued_last{0};
+    std::atomic<uint32_t> perf_queued_max{0};
+    std::atomic<uint32_t> perf_idle_queued_samples{0};
+
     std::atomic<uint32_t> perf_active_flush_attempts{0};
     std::atomic<uint32_t> perf_deferred_flushes{0};
     std::atomic<uint32_t> perf_display_update_total_us{0};

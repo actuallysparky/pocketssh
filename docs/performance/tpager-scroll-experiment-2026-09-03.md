@@ -94,3 +94,98 @@ contains watchdog, panic, brownout, or SSH-session-disconnect evidence.
 Raw serial and schema-3 JSON are retained under ignored
 `_local/benchmarks/round2-normal32k-20260903/` and
 `_local/benchmarks/round2-deferred32k-20260903/`.
+
+## 2026-09-04T17:29:00-07:00 — Round 3 diagnostic preparation
+
+Source inspection corrects the strength of the Round-2 interpretation above.
+The receive loop performs an immediate, read-only `select()` before each
+channel read. An idle socket **skips libssh2 entirely** and assigns a synthetic
+`LIBSSH2_ERROR_EAGAIN`, which increments the old `channel_eagain` counter.
+Thus the matching 8,750/8,885 idle/EAGAIN counts are not evidence that libssh2
+returned EAGAIN. Deferred repaint still rejects display backpressure as the
+next optimization target, but remote flow control versus local receive
+integration remains unresolved.
+
+The bundled `skuodi/libssh2_esp` 1.1.0 source provides a concrete local
+hypothesis: `_libssh2_channel_read()` in `libssh2/src/channel.c` processes
+pending transport packets before copying at most the requested 1,023 bytes
+into PocketSSH's buffer. Remaining channel data can already be queued when
+the next socket readiness check is idle. Requiring another readable TCP
+socket could then strand buffered payload. This is source-supported reasoning,
+not a new physical finding; no receive scheduling or window adjustment has
+been changed.
+
+The content-free transport extension begins with `transport_version=4` and
+ends with `transport_complete=4`. The host accepts version 4 only with all
+extension fields and its completion marker, emits summary schema 4, and lists
+observed transport versions. Legacy unversioned schema-3 groups retain their
+old meanings; absent fields are omitted from medians rather than filled with
+zero. Existing perf/core/transport grouping and fixed workloads remain.
+
+| Fields | Meaning |
+| --- | --- |
+| `select_ready`, `select_timeout`, `select_error`, `select_no_fd`, `select_skipped` | Separate select outcomes; no-fd means positive return without the monitored descriptor set. Skipped means no eligible socket/connection. |
+| `read_calls`, `read_positive`, `read_bytes` | Actual channel calls, positive returns, and returned payload bytes. |
+| `read_eagain_ready`, `read_eagain_idle`, `read_skipped_idle` | Real EAGAIN after readiness; real EAGAIN after idle (always zero under the retained gate); synthetic idle outcomes with no channel call. Old `channel_eagain` still includes synthetic outcomes. |
+| `eagain_block_none`, `eagain_block_in`, `eagain_block_out`, `eagain_block_both` | Block-direction categories sampled immediately after actual EAGAIN, before keepalive or other receive-loop work. Not idle-socket state. |
+| `read_zero`, `errors_socket_recv`, `errors_socket_send`, `errors_socket_disconnect`, `errors_channel_closed`, `errors_other` | Zero-return/legacy EOF-path count and actual read errors grouped by libssh2 codes -43, -7, -13, -26, and remaining errors. No new EOF probe. |
+| `window_samples`, `window_last`, `window_initial`, `queued_last`, `queued_max`, `idle_queued_samples` | Receive-owner samples at most every 250 ms before a read decision; local SSH receive window and queued channel bytes, including extended data. Idle queued samples count observations, not bytes or read calls. Values require a nonzero sample count. |
+
+The bundled `libssh2_channel_window_read_ex()` only reads local window fields
+and walks the packet queue; it performs no socket I/O or window adjustment.
+`libssh2_session_block_directions()` reads the stored direction mask. No
+libssh2 calls were added to the serial snapshot task. Queue sampling adds
+bounded-frequency diagnostic work; its runtime overhead remains unmeasured.
+Counters are relaxed atomic observations, not a transaction across a running
+receive task or a concurrent reset.
+
+| Comparison | Received / active RX rate | Outcome |
+| --- | --- | --- |
+| Initial canonical 512 KiB | 164,010 B / 3,069 B/s | Single 300-second timeout. |
+| Current row-rotation canonical 512 KiB | 164,727 B / 12,906 B/s | Single 300-second timeout; not end-to-end throughput. |
+| Round-2 normal / deferred 32 KiB | 25,973 / 26,537 B | First trials timed out at 90 seconds; 87.105 / 88.550 seconds trailing receive idle. |
+| Round-3 new device trial | Not collected | Diagnostic delivery awaits fresh artifact-bound user authorization and broker receipt. |
+
+Next run normal 32 KiB ASCII scrolling on `prodmini`, normal font and unchanged
+Wi-Fi, with a 90-second ceiling and up to three completed trials; retain the
+first timeout and stop. Persistent idle queued samples would prioritize the
+local readiness gate; idle with an empty queue would prioritize authorized
+remote producer/TCP/window observation. Actual readable-socket EAGAIN and its
+block direction would instead prioritize the libssh2 retry contract. Queue
+bytes include extended data, so they alone do not prove stream-0 payload is
+available. Deferred comparison is optional only if new repaint ambiguity
+arises. Proceed to canonical 512 KiB/300 seconds only after the short gate
+completes, unless separately designated a partial-stall diagnostic. Preserve
+watchdog safety and the 10 ms idle polling contract in any later proposal.
+
+No new physical serial evidence exists: watchdog, panic, brownout, disconnect,
+boot, and UI behavior are **not observed for this artifact**. No device or
+remote producer was accessed, and no behavior optimization was made.
+
+### 2026-09-04T17:30:29-07:00 — Local validation and delivery candidates
+
+Validation: `./tests/run_terminal_core_tests.sh` passed (including wrapper
+contracts); `python tests/test_perf_benchmark.py` passed all six tests;
+`python -m py_compile misc/perf_benchmark.py` passed. Python commands used
+`/Users/sparky/.espressif/python_env/idf5.5_py3.14_env/bin/python` because plain
+`python` is absent from the default shell PATH. The eleven-run host benchmark
+passed with medians 5,127 screen-fill, 7,597 ASCII-scroll, 7,794 ANSI/UTF-8-scroll,
+and 20 scrollback-viewport microseconds/MiB, saved under
+`_local/benchmarks/host/20260905T002633Z/`. These are current host validation
+samples, not a new paired optimization experiment or device throughput claim.
+
+`./build.sh tpager`, `./build.sh tdeckplus`, both `./package.sh` targets, package
+byte equality with their built app images, and `git diff --check` passed.
+The initial sandboxed build failed in ESP-IDF component-manager process
+inspection (`psutil`/`sysctl`); the approved build retry outside the sandbox
+passed. Builds retain warnings in unmodified dependencies/Kconfig; no compiler
+warning was reported against the modified `main/ssh_terminal.cpp`.
+Build logs and generated artifacts remain ignored under `_local/`.
+
+- `tpager`: `PocketSSH-TPager.bin`, 1,770,016 bytes, SHA-256 `ad0a1f70eb6bbf2a96fafee1c3ca832d40ecf22bd490210ed2265b1c67ad98e0`.
+- `tdeckplus`: `PocketSSH-2.0.bin`, 4,247,360 bytes, SHA-256 `a8b46a8cb89c73f3a38a26f510ee54d9d72312f2de58ed87cc087e101d87dd21`.
+
+The T-Pager package is 64,992 bytes smaller than the historically observed
+1,835,008-byte Launcher Slot A. The build wrapper's 81% headroom refers to
+its standalone partition layout and is not Launcher Slot-A evidence. A fresh
+broker receipt and live slot verification remain mandatory before delivery.

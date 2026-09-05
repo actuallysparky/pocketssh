@@ -4228,6 +4228,34 @@ void SSHTerminal::reset_performance_stats()
     perf_socket_readable_polls.store(0, std::memory_order_relaxed);
     perf_socket_idle_polls.store(0, std::memory_order_relaxed);
     perf_channel_eagain.store(0, std::memory_order_relaxed);
+    perf_select_ready.store(0, std::memory_order_relaxed);
+    perf_select_timeout.store(0, std::memory_order_relaxed);
+    perf_select_error.store(0, std::memory_order_relaxed);
+    perf_select_no_fd.store(0, std::memory_order_relaxed);
+    perf_select_skipped.store(0, std::memory_order_relaxed);
+    perf_read_calls.store(0, std::memory_order_relaxed);
+    perf_read_positive.store(0, std::memory_order_relaxed);
+    perf_read_bytes.store(0, std::memory_order_relaxed);
+    perf_read_eagain_ready.store(0, std::memory_order_relaxed);
+    perf_read_eagain_idle.store(0, std::memory_order_relaxed);
+    perf_read_skipped_idle.store(0, std::memory_order_relaxed);
+    perf_read_zero.store(0, std::memory_order_relaxed);
+    perf_errors_socket_recv.store(0, std::memory_order_relaxed);
+    perf_errors_socket_send.store(0, std::memory_order_relaxed);
+    perf_errors_socket_disconnect.store(0, std::memory_order_relaxed);
+    perf_errors_channel_closed.store(0, std::memory_order_relaxed);
+    perf_errors_other.store(0, std::memory_order_relaxed);
+    perf_eagain_block_none.store(0, std::memory_order_relaxed);
+    perf_eagain_block_in.store(0, std::memory_order_relaxed);
+    perf_eagain_block_out.store(0, std::memory_order_relaxed);
+    perf_eagain_block_both.store(0, std::memory_order_relaxed);
+    perf_window_samples.store(0, std::memory_order_relaxed);
+    perf_window_last.store(0, std::memory_order_relaxed);
+    perf_window_initial.store(0, std::memory_order_relaxed);
+    perf_queued_last.store(0, std::memory_order_relaxed);
+    perf_queued_max.store(0, std::memory_order_relaxed);
+    perf_idle_queued_samples.store(0, std::memory_order_relaxed);
+
     perf_active_flush_attempts.store(0, std::memory_order_relaxed);
     perf_deferred_flushes.store(0, std::memory_order_relaxed);
     perf_display_update_total_us.store(0, std::memory_order_relaxed);
@@ -4321,7 +4349,7 @@ std::string SSHTerminal::transport_performance_metrics_snapshot() const
     char line[512];
     std::snprintf(
         line, sizeof(line),
-        "POCKETCTL transport rx_idle_ms=%" PRIu32 " socket_readable_polls=%" PRIu32
+        "POCKETCTL transport transport_version=4 rx_idle_ms=%" PRIu32 " socket_readable_polls=%" PRIu32
         " socket_idle_polls=%" PRIu32 " channel_eagain=%" PRIu32
         " active_flush_attempts=%" PRIu32 " deferred_flushes=%" PRIu32
         " display_update_us_total=%" PRIu32 " display_update_us_max=%" PRIu32
@@ -4335,7 +4363,36 @@ std::string SSHTerminal::transport_performance_metrics_snapshot() const
         perf_display_update_total_us.load(std::memory_order_relaxed),
         perf_display_update_max_us.load(std::memory_order_relaxed),
         perf_repaint_deferred.load(std::memory_order_relaxed) ? 1u : 0u);
-    return line;
+    std::string result(line);
+    result += " select_ready=" + std::to_string(perf_select_ready.load(std::memory_order_relaxed));
+    result += " select_timeout=" + std::to_string(perf_select_timeout.load(std::memory_order_relaxed));
+    result += " select_error=" + std::to_string(perf_select_error.load(std::memory_order_relaxed));
+    result += " select_no_fd=" + std::to_string(perf_select_no_fd.load(std::memory_order_relaxed));
+    result += " select_skipped=" + std::to_string(perf_select_skipped.load(std::memory_order_relaxed));
+    result += " read_calls=" + std::to_string(perf_read_calls.load(std::memory_order_relaxed));
+    result += " read_positive=" + std::to_string(perf_read_positive.load(std::memory_order_relaxed));
+    result += " read_bytes=" + std::to_string(perf_read_bytes.load(std::memory_order_relaxed));
+    result += " read_eagain_ready=" + std::to_string(perf_read_eagain_ready.load(std::memory_order_relaxed));
+    result += " read_eagain_idle=" + std::to_string(perf_read_eagain_idle.load(std::memory_order_relaxed));
+    result += " read_skipped_idle=" + std::to_string(perf_read_skipped_idle.load(std::memory_order_relaxed));
+    result += " read_zero=" + std::to_string(perf_read_zero.load(std::memory_order_relaxed));
+    result += " errors_socket_recv=" + std::to_string(perf_errors_socket_recv.load(std::memory_order_relaxed));
+    result += " errors_socket_send=" + std::to_string(perf_errors_socket_send.load(std::memory_order_relaxed));
+    result += " errors_socket_disconnect=" + std::to_string(perf_errors_socket_disconnect.load(std::memory_order_relaxed));
+    result += " errors_channel_closed=" + std::to_string(perf_errors_channel_closed.load(std::memory_order_relaxed));
+    result += " errors_other=" + std::to_string(perf_errors_other.load(std::memory_order_relaxed));
+    result += " eagain_block_none=" + std::to_string(perf_eagain_block_none.load(std::memory_order_relaxed));
+    result += " eagain_block_in=" + std::to_string(perf_eagain_block_in.load(std::memory_order_relaxed));
+    result += " eagain_block_out=" + std::to_string(perf_eagain_block_out.load(std::memory_order_relaxed));
+    result += " eagain_block_both=" + std::to_string(perf_eagain_block_both.load(std::memory_order_relaxed));
+    result += " window_samples=" + std::to_string(perf_window_samples.load(std::memory_order_relaxed));
+    result += " window_last=" + std::to_string(perf_window_last.load(std::memory_order_relaxed));
+    result += " window_initial=" + std::to_string(perf_window_initial.load(std::memory_order_relaxed));
+    result += " queued_last=" + std::to_string(perf_queued_last.load(std::memory_order_relaxed));
+    result += " queued_max=" + std::to_string(perf_queued_max.load(std::memory_order_relaxed));
+    result += " idle_queued_samples=" + std::to_string(perf_idle_queued_samples.load(std::memory_order_relaxed));
+    result += " transport_complete=4";
+    return result;
 }
 
 void SSHTerminal::set_performance_repaint_deferred(bool deferred)
@@ -7157,6 +7214,7 @@ void SSHTerminal::ssh_receive_task(void* param)
     int64_t next_keepalive_ms = keepalive_interval_ms > 0
         ? (esp_timer_get_time() / 1000) + keepalive_interval_ms
         : 0;
+    int64_t next_window_sample_ms = 0;
     size_t bytes_since_fairness_yield = 0;
     int64_t fairness_window_started_ms = esp_timer_get_time() / 1000;
 
@@ -7184,15 +7242,67 @@ void SSHTerminal::ssh_receive_task(void* param)
             timeval immediate = {0, 0};
             const int select_rc = select(terminal->ssh_socket + 1, &readfds, nullptr, nullptr, &immediate);
             socket_readable = select_rc > 0 && FD_ISSET(terminal->ssh_socket, &readfds);
+            if (socket_readable) atomic_add_saturating(terminal->perf_select_ready, 1);
+            else if (select_rc == 0) atomic_add_saturating(terminal->perf_select_timeout, 1);
+            else if (select_rc < 0) atomic_add_saturating(terminal->perf_select_error, 1);
+            else atomic_add_saturating(terminal->perf_select_no_fd, 1);
+        } else {
+            atomic_add_saturating(terminal->perf_select_skipped, 1);
         }
         if (socket_readable) {
             atomic_add_saturating(terminal->perf_socket_readable_polls, 1);
         } else {
             atomic_add_saturating(terminal->perf_socket_idle_polls, 1);
         }
-        rc = terminal->ssh_connected && socket_readable
-            ? libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1)
-            : (terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT);
+        // Bundled window_read_ex only walks queued packets; it performs no I/O.
+        // Sample in the receive owner at 250 ms, including idle passes. Queued
+        // bytes include extended data and do not prove stream-0 readability.
+        const int64_t sample_ms = esp_timer_get_time() / 1000;
+        if (terminal->ssh_connected && terminal->channel && sample_ms >= next_window_sample_ms) {
+            next_window_sample_ms = sample_ms + 250;
+            unsigned long queued = 0, initial = 0;
+            const unsigned long window = libssh2_channel_window_read_ex(terminal->channel, &queued, &initial);
+            terminal->perf_window_last.store(window, std::memory_order_relaxed);
+            terminal->perf_window_initial.store(initial, std::memory_order_relaxed);
+            terminal->perf_queued_last.store(queued, std::memory_order_relaxed);
+            atomic_record_max(terminal->perf_queued_max, static_cast<uint32_t>(queued));
+            atomic_add_saturating(terminal->perf_window_samples, 1);
+            if (!socket_readable && queued > 0) atomic_add_saturating(terminal->perf_idle_queued_samples, 1);
+        }
+        const bool read_called = terminal->ssh_connected && socket_readable;
+        if (read_called) {
+            atomic_add_saturating(terminal->perf_read_calls, 1);
+            rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
+            if (rc > 0) {
+                atomic_add_saturating(terminal->perf_read_positive, 1);
+                atomic_add_saturating(terminal->perf_read_bytes, static_cast<uint32_t>(rc));
+            } else if (rc == LIBSSH2_ERROR_EAGAIN) {
+                atomic_add_saturating(terminal->perf_read_eagain_ready, 1);
+                // Directions are meaningful immediately after real EAGAIN,
+                // not after a fabricated idle result or subsequent keepalive.
+                const int directions = libssh2_session_block_directions(terminal->session);
+                if (directions == 0) atomic_add_saturating(terminal->perf_eagain_block_none, 1);
+                else if (directions == LIBSSH2_SESSION_BLOCK_INBOUND) atomic_add_saturating(terminal->perf_eagain_block_in, 1);
+                else if (directions == LIBSSH2_SESSION_BLOCK_OUTBOUND) atomic_add_saturating(terminal->perf_eagain_block_out, 1);
+                else atomic_add_saturating(terminal->perf_eagain_block_both, 1);
+            } else if (rc == 0) {
+                // Existing loop treats zero as EOF; do not add an EOF probe.
+                atomic_add_saturating(terminal->perf_read_zero, 1);
+            } else {
+                switch (rc) {
+                case LIBSSH2_ERROR_SOCKET_RECV: atomic_add_saturating(terminal->perf_errors_socket_recv, 1); break;
+                case LIBSSH2_ERROR_SOCKET_SEND: atomic_add_saturating(terminal->perf_errors_socket_send, 1); break;
+                case LIBSSH2_ERROR_SOCKET_DISCONNECT: atomic_add_saturating(terminal->perf_errors_socket_disconnect, 1); break;
+                case LIBSSH2_ERROR_CHANNEL_CLOSED: atomic_add_saturating(terminal->perf_errors_channel_closed, 1); break;
+                default: atomic_add_saturating(terminal->perf_errors_other, 1); break;
+                }
+            }
+        } else {
+            rc = terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT;
+            if (rc == LIBSSH2_ERROR_EAGAIN) atomic_add_saturating(terminal->perf_read_skipped_idle, 1);
+            // read_eagain_idle stays zero under the unchanged readiness gate:
+            // no channel read is attempted after an idle select.
+        }
         // Do not probe libssh2_channel_eof() on an idle transport.  The
         // ESP-IDF port can block inside that probe even after the session
         // and raw socket were configured nonblocking, which freezes this
