@@ -276,3 +276,65 @@ behavior, and advance to canonical 512 KiB only if the short trials complete.
 
 - Candidate `tpager`: 1,770,160 bytes; SHA-256 `411605e11ed9599c18f776521ebc44a292e66a3a14fc0b39f821908b764a6c88`.
 - Candidate `tdeckplus`: 4,247,504 bytes; SHA-256 `fefd045184d863b5618488eb630fb98bcacf90dda771ed88cfd064b8f12a67c0`.
+
+## 2026-09-04T18:14:08-07:00 — Round 4: queue fix works; watchdog gate rejects the build
+
+The user requested continued work through a build suitable for acceptance.
+Fresh broker receipt `3872285e-54a6-4220-8797-52cf39c2ac59` verified the registered
+Pager and live Slot A, then wrote only candidate SHA-256
+`411605e11ed9599c18f776521ebc44a292e66a3a14fc0b39f821908b764a6c88` to `pocket`
+at `0x1A0000`. No other partition was written.
+
+The old helper reported three short trials completed, but their final snapshots
+still had 11,879–15,335 queued bytes. Those byte-threshold-only runs under
+`_local/benchmarks/round4-buffered-normal32k/` are not full-drain acceptance:
+PTY expansion allows RX to cross the producer-byte target early, and subsequent
+trials can overlap leftover output. The fixed remote workloads remain unchanged.
+The corrected helper requires the RX threshold, a sampled empty libssh2 queue,
+and at least 1,000 ms trailing receive idle. It records host elapsed time
+including settlement. Schema 5 introduced this rule; legacy telemetry remains
+parseable but missing queue measurements cannot prove drainage. Local quiescence
+does not independently report the remote producer exit status.
+
+With that stronger criterion, normal 32 KiB trials all drained: 49,327 received
+bytes each; host elapsed 5,368/5,358/5,372 ms; last queue zero and receive idle
+1,225/1,282/1,085 ms. Read calls 51/50/51 exceeded select-ready counts 28/25/28,
+showing reads proceeded from buffered channel data without new TCP readability.
+Raw evidence: `_local/benchmarks/round4-drained-normal32k/`.
+
+The canonical 512 KiB run then drained 786,608 bytes per trial, demonstrating
+the previous receive stall is removed, but **the build is rejected**: nine
+IDLE0 watchdog triggers occurred during later sustained receive work. No panic
+or brownout was observed. The idle probe was interrupted instead of continuing
+stress. Its interrupted schema-5 helper did not write its final summary, so
+`_local/benchmarks/round4-drained-normal512k/recovered-evidence.json` explicitly
+labels recovered raw-serial samples and unavailable host timings; the raw log,
+exact failing binary/ELF and decoded backtraces are retained alongside it.
+Do not turn these drained-byte results into a fault-free performance median.
+
+Backtraces resolve to `TerminalCore::scroll_up`/feed and the receive-owner queue
+sampler, not a stuck channel read. The built target has
+`CONFIG_FREERTOS_HZ=100`: `pdMS_TO_TICKS(1)` is zero, so the existing fairness
+call only yields to ready peers and does not block long enough to let IDLE0 run.
+Previously, socket-idle sleeps masked this during stalled output. The next
+narrow fix is `vTaskDelay(1)` at the same 4 KiB/10 ms fairness boundary: one real
+RTOS tick. No watchdog timeout, configuration, terminal semantics, storage,
+LCD/DMA setting, or SSH setting is relaxed.
+
+The host helper is now schema 6 and additionally rejects watchdog, panic,
+brownout, SSH EOF/read-error, and receive-task-exit markers, stopping further
+workloads and retaining partial counters. Interruptions also retain available
+summary evidence. The optional idle probe samples the same session before a
+fixed screen-fill response check; it does not accept arbitrary remote commands.
+Synthetic tests cover early-threshold rejection, missing queue telemetry,
+fault detection/partial retention, interruption/repaint restoration, and no
+new workload after an idle fault. README documents the changed acceptance rule.
+
+Round-5 candidate validation: terminal/wrapper tests, all 13 Python tests,
+Python byte compilation, host benchmarks, both target builds/packages with
+built-image byte equality, and `git diff --check` passed. These checks prepare
+the nonzero-tick candidate; they do not establish its watchdog/runtime safety.
+
+- Round-5 `tpager`: 1,770,160 bytes, SHA-256 `75f49d7a46db8bf9a221a2c4794e32acb0d80ad63a64c56ba8ade6550a181ffb`.
+
+- Round-5 `tdeckplus`: 4,247,504 bytes, SHA-256 `9eba22ac8cccb7657ccef4cdce3b43d0c81667ce91e66365f0bb0247fc8c949a`.

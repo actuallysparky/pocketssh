@@ -60,6 +60,20 @@ terminal-core processing but defers receive-loop repainting. The benchmark
 helper exposes it as `--repaint-mode` and always restores normal mode after a
 trial or timeout. It is not an interactive terminal setting.
 
+Benchmark summary schema 6 requires both the byte threshold and a sampled empty
+libssh2 queue with at least one second of receive idle before starting another
+trial. This avoids overlapping PTY-expanded output with the next measurement;
+older byte-threshold-only results are not full-drain comparisons. Version-4
+transport firmware is required to prove drainage, although legacy telemetry
+remains parseable. `host_elapsed_ms` includes the final quiet period; `rx_bps`
+remains an active-window metric. Queue/receive quiescence does not report the
+remote process exit status. Optionally use `--idle-probe-seconds 45` to sample
+an idle session after completed trials and then verify a fixed `screen-fill`
+workload response in that same session. Watchdog, panic, brownout, SSH EOF,
+read-error, and receive-task exit markers reject the run and stop further
+workloads. Faults and interruptions retain available evidence in the summary;
+exit codes are 2 for timeout, 3 for fault, and 130 for interruption.
+
 ## Documentation
 
 - `docs/pocketssh-2.0-functional-spec.md` — T-Deck Plus terminal behavior and delivery contract.

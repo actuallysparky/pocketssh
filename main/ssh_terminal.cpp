@@ -7321,7 +7321,9 @@ void SSHTerminal::ssh_receive_task(void* param)
             if (bytes_since_fairness_yield >= kReceiveFairnessBudgetBytes ||
                 now_ms - fairness_window_started_ms >= kReceiveFairnessBudgetMs) {
                 atomic_add_saturating(terminal->perf_receive_yields, 1);
-                vTaskDelay(pdMS_TO_TICKS(1));
+                // One real RTOS tick lets IDLE0 run. At CONFIG_FREERTOS_HZ=100,
+                // pdMS_TO_TICKS(1) is zero and only yields to ready peers.
+                vTaskDelay(1);
                 bytes_since_fairness_yield = 0;
                 fairness_window_started_ms = esp_timer_get_time() / 1000;
             }

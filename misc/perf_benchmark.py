@@ -132,6 +132,28 @@ def consume_metric_line(line: str, state: dict[str, object]) -> dict[str, int] |
     return sample
 
 
+FAULT_PATTERNS = {
+    "watchdog": re.compile(r"Task watchdog got triggered", re.I),
+    "panic": re.compile(r"Guru Meditation Error|panic'ed|abort\(\) was called", re.I),
+    "brownout": re.compile(r"Brownout detector was triggered", re.I),
+    "ssh_disconnect": re.compile(r"ssh rx: task ended", re.I),
+    "ssh_read_error": re.compile(r"Read error: -?\d+", re.I),
+    "ssh_eof": re.compile(r"Channel EOF", re.I),
+}
+
+
+def record_faults(line: str, state: dict[str, object]) -> bool:
+    if not state.get("fault_tracking", False):
+        return False
+    counts = state.setdefault("fault_counts", {})
+    found = False
+    for name, pattern in FAULT_PATTERNS.items():
+        if pattern.search(line):
+            counts[name] = counts.get(name, 0) + 1
+            found = True
+    return found
+
+
 def read_available(port: serial.Serial, raw_log, duration_s: float, state: dict[str, object]) -> list[dict[str, int]]:
     deadline = time.monotonic() + duration_s
     samples: list[dict[str, int]] = []
@@ -147,14 +169,39 @@ def read_available(port: serial.Serial, raw_log, duration_s: float, state: dict[
         if lines and not lines[-1].endswith(("\n", "\r")):
             state["tail"] = lines.pop()
         for line in lines:
+            if record_faults(line, state):
+                # A fault log can interrupt a metric line on the serial wire.
+                state["pending_metrics"] = None
+                continue
             sample = consume_metric_line(line, state)
             if sample is not None:
+                state["last_sample"] = sample
                 samples.append(sample)
     return samples
 
 
+# A byte threshold alone can stop mid-stream: PTYs may expand LF to CRLF,
+# and libssh2 can still have substantial buffered payload at that point.
+DRAIN_IDLE_MS = 1000
+
+
+def trial_is_drained(sample: dict[str, int], target_bytes: int) -> bool:
+    """Confirm the measured receive stream has reached its threshold and drained.
+
+    This proves local queue/receive quiescence, not the remote process exit code.
+    Legacy telemetry remains parseable but cannot establish queue drainage.
+    """
+    return (
+        sample.get("rx_bytes", 0) >= target_bytes
+        and sample.get("transport_window_samples", 0) > 0
+        and sample.get("transport_queued_last") == 0
+        and sample.get("transport_rx_idle_ms", 0) >= DRAIN_IDLE_MS
+    )
+
+
 def run_trial(port: serial.Serial, raw_log, state: dict[str, object], workload: str,
               payload_bytes: int, timeout_s: float, repaint_mode: str) -> tuple[dict[str, int], bool]:
+    state["fault_tracking"] = True
     send_control(port, f"perf repaint {repaint_mode}")
     read_available(port, raw_log, 0.25, state)
     send_control(port, "perf reset")
@@ -162,7 +209,9 @@ def run_trial(port: serial.Serial, raw_log, state: dict[str, object], workload: 
     command, target_bytes = workload_command(workload, payload_bytes)
     send_control(port, f"cmd {command}")
 
-    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    deadline = started + timeout_s
+    threshold_elapsed_ms: int | None = None
     last_snapshot = 0.0
     latest: dict[str, int] | None = None
     try:
@@ -173,26 +222,65 @@ def run_trial(port: serial.Serial, raw_log, state: dict[str, object], workload: 
                 last_snapshot = now
             for sample in read_available(port, raw_log, 0.15, state):
                 latest = sample
+            if state.get("fault_counts"):
+                break
             if latest is not None and latest.get("rx_bytes", 0) >= target_bytes:
-                send_control(port, "perf snapshot")
-                samples = read_available(port, raw_log, 0.5, state)
-                if samples:
-                    latest = samples[-1]
-                latest["target_bytes"] = target_bytes
-                latest["timed_out"] = 0
-                return latest, True
+                if threshold_elapsed_ms is None:
+                    threshold_elapsed_ms = int((time.monotonic() - started) * 1000)
+                if trial_is_drained(latest, target_bytes):
+                    latest["target_bytes"] = target_bytes
+                    latest["timed_out"] = 0
+                    latest["faulted"] = 0
+                    latest["threshold_reached"] = 1
+                    latest["threshold_elapsed_ms"] = threshold_elapsed_ms
+                    latest["drain_confirmed"] = 1
+                    latest["host_elapsed_ms"] = int((time.monotonic() - started) * 1000)
+                    return latest, True
         # A streaming stall is benchmark evidence, not a reason to discard the
         # only useful final telemetry sample. Persist it in the summary and stop
         # this run: a wedged remote producer cannot make a later trial comparable.
         timeout_sample = dict(latest or {})
         timeout_sample["target_bytes"] = target_bytes
-        timeout_sample["timed_out"] = 1
+        timeout_sample["timed_out"] = int(not state.get("fault_counts"))
+        timeout_sample["faulted"] = int(bool(state.get("fault_counts")))
+        timeout_sample["threshold_reached"] = int(threshold_elapsed_ms is not None)
+        if threshold_elapsed_ms is not None:
+            timeout_sample["threshold_elapsed_ms"] = threshold_elapsed_ms
+        timeout_sample["drain_confirmed"] = 0
+        timeout_sample["host_elapsed_ms"] = int((time.monotonic() - started) * 1000)
         return timeout_sample, False
+    except KeyboardInterrupt:
+        partial = dict(latest or {})
+        partial.update(target_bytes=target_bytes, timed_out=0, interrupted=1,
+                       drain_confirmed=0, host_elapsed_ms=int((time.monotonic() - started) * 1000))
+        return partial, False
     finally:
         # Always restore ordinary rendering. Firmware queues the final repaint
         # on its receive task, avoiding a serial-control/read race in TerminalCore.
         send_control(port, "perf repaint normal")
         read_available(port, raw_log, 0.5, state)
+
+
+def run_idle_probe(port: serial.Serial, raw_log, state: dict[str, object],
+                   seconds: float, repaint_mode: str) -> dict[str, object]:
+    """Observe an idle session, then exercise only the fixed screen-fill workload."""
+    deadline = time.monotonic() + seconds
+    first: dict[str, int] | None = None
+    latest: dict[str, int] | None = None
+    count = 0
+    while time.monotonic() < deadline:
+        send_control(port, "perf snapshot")
+        for sample in read_available(port, raw_log, min(1.0, max(0.0, deadline - time.monotonic())), state):
+            first = first or sample
+            latest = sample
+            count += 1
+        if state.get("fault_counts"):
+            return {"requested_idle_seconds": seconds, "samples": count,
+                    "first": first, "last": latest, "completed": False}
+    response, completed = run_trial(port, raw_log, state, "screen-fill", 512, 30.0, repaint_mode)
+    return {"requested_idle_seconds": seconds, "samples": count,
+            "first": first, "last": latest,
+            "screen_fill": response, "completed": completed and count >= 2}
 
 
 def median(values: list[int]) -> int:
@@ -208,11 +296,15 @@ def main() -> int:
     parser.add_argument("--workload", choices=sorted(WORKLOADS), default="ascii-scroll")
     parser.add_argument("--repaint-mode", choices=("normal", "deferred"), default="normal")
     parser.add_argument("--timeout-seconds", type=float, default=300.0)
+    parser.add_argument("--idle-probe-seconds", type=float, default=0.0,
+                        help="After completed trials, observe idle snapshots then run fixed screen-fill")
     parser.add_argument("--pre-wait-seconds", type=float, default=4.0)
     parser.add_argument("--connect-command", default="", help="Optional saved-alias command; not persisted")
     parser.add_argument("--connect-wait-seconds", type=float, default=15.0)
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
+    if not 0.0 <= args.idle_probe_seconds <= 300.0:
+        parser.error("--idle-probe-seconds must be between 0 and 300")
     if args.trials < 1 or args.payload_bytes < 1:
         parser.error("--trials and --payload-bytes must be positive")
     if args.connect_command and re.fullmatch(r"connect [A-Za-z0-9_.-]+", args.connect_command) is None:
@@ -234,6 +326,8 @@ def main() -> int:
     port.open()
     trials: list[dict[str, int]] = []
     timed_out = False
+    interrupted = False
+    idle_probe: dict[str, object] | None = None
     serial_state: dict[str, object] = {"tail": "", "pending_metrics": None}
     try:
         with raw_path.open("wb") as raw_log:
@@ -250,18 +344,26 @@ def main() -> int:
                     f"trial {trial + 1} ({args.workload}): rx_bps={result.get('rx_bps', 0)} "
                     f"draw_us_max={result.get('draw_us_max', 0)} "
                     f"lock_timeout={result.get('lock_timeout', 0)} "
-                    f"timed_out={result.get('timed_out', 0)}",
+                    f"timed_out={result.get('timed_out', 0)} "
+                    f"faulted={int(bool(serial_state.get('fault_counts')))}",
                     flush=True,
                 )
-                if not completed:
+                if not completed or serial_state.get("fault_counts"):
                     timed_out = True
                     break
+            if not timed_out and args.idle_probe_seconds > 0:
+                idle_probe = run_idle_probe(port, raw_log, serial_state, args.idle_probe_seconds, args.repaint_mode)
+                timed_out = not idle_probe["completed"]
+    except KeyboardInterrupt:
+        interrupted = True
+        idle_probe = {"completed": False, "interrupted": True,
+                      "last": serial_state.get("last_sample")}
     finally:
         send_control(port, "perf repaint normal")
         port.close()
 
     key_metrics = (
-        "rx_bps", "rx_to_invalidate_p95_ms", "feed_us_max", "draw_us_total", "draw_us_max",
+        "host_elapsed_ms", "threshold_elapsed_ms", "rx_bps", "rx_to_invalidate_p95_ms", "feed_us_max", "draw_us_total", "draw_us_max",
         "lock_timeout", "lock_wait_us_max", "heap_free", "heap_largest", "yields",
         "core_printable_bytes", "core_control_bytes", "core_utf8_bytes", "core_utf8_codepoints",
         "core_cell_writes", "core_scroll_up_ops", "core_scroll_down_ops",
@@ -271,23 +373,31 @@ def main() -> int:
         "transport_display_update_us_total", "transport_display_update_us_max",
     )
     key_metrics += tuple(f"transport_{key}" for key in TRANSPORT_V4_FIELDS)
+    outcome = ("interrupted" if interrupted or any(trial.get("interrupted") for trial in trials)
+               else "fault" if serial_state.get("fault_counts")
+               else "timeout" if timed_out else "completed")
     summary = {
-        "schema": 4,
+        "schema": 6,
+        "acceptance_rule": "drained-and-no-faults-v1",
+        "fault_counts": serial_state.get("fault_counts", {}),
+        "completion_rule": "rx-threshold-plus-empty-queue-and-idle-v1",
+        "drain_idle_ms": DRAIN_IDLE_MS,
         "transport_versions": sorted({trial.get("transport_transport_version", 3) for trial in trials}),
         "target": "tpager",
         "workload": args.workload,
         "repaint_mode": args.repaint_mode,
         "payload_bytes": workload_command(args.workload, args.payload_bytes)[1],
-        "outcome": "timeout" if timed_out else "completed",
-        "completed_trials": sum(1 for trial in trials if trial.get("timed_out", 0) == 0),
+        "outcome": outcome,
+        "completed_trials": sum(1 for trial in trials if trial.get("drain_confirmed", 0) == 1),
         "trials": trials,
+        "idle_probe": idle_probe,
         "median": {key: median([trial[key] for trial in trials]) for key in key_metrics
                    if trials and all(key in trial for trial in trials)},
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"saved raw log: {raw_path}")
     print(f"saved summary: {summary_path}")
-    return 2 if timed_out else 0
+    return {"completed": 0, "timeout": 2, "fault": 3, "interrupted": 130}[outcome]
 
 
 if __name__ == "__main__":
