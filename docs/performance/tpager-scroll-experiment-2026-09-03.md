@@ -189,3 +189,90 @@ The T-Pager package is 64,992 bytes smaller than the historically observed
 1,835,008-byte Launcher Slot A. The build wrapper's 81% headroom refers to
 its standalone partition layout and is not Launcher Slot-A evidence. A fresh
 broker receipt and live slot verification remain mandatory before delivery.
+
+### 2026-09-04T17:39:00-07:00 — Authorized diagnostic delivery and physical result
+
+The user explicitly authorized flashing the connected Pager after the diagnostic
+package was ready. Source commit `f1d221a` was committed locally with the
+repository's GitHub no-reply identity. The broker initially rejected the new
+repository lineage name because its installed policy still maps PocketSSH under
+`projects/pagerdeck/PocketSSH`; inspection of that policy confirmed the same
+PocketSSH/Launcher Slot-A mapping. Using that policy key with the current-root
+artifact produced receipt `5c811c7d-603f-47fb-92c6-b147e30500ea`, verified MAC
+`10:20:ba:33:fa:9c`, and freshly read the live `pocket`/OTA-0 partition at
+`0x1A0000`, size 1,835,008 bytes. The broker wrote only that region and verified
+SHA-256 `ad0a1f70eb6bbf2a96fafee1c3ca832d40ecf22bd490210ed2265b1c67ad98e0`.
+Launcher, Slot B, bootloader, partition table, and data were outside the write.
+No broker policy or registry was changed.
+
+A 15-second broker monitor was quiet. The subsequent benchmark USB open
+captured boot, keyboard initialization PASS, an active SSH receive worker,
+and `libssh2 blocking=0`; the fixed saved `prodmini` reconnect received data.
+The first sandboxed helper attempt failed before opening USB; the approved
+retry ran the normal-repaint 32 KiB ASCII workload with a 90-second ceiling and
+three requested trials, stopping and retaining the first timeout as designed.
+Wi-Fi/font settings were not changed; this was not a separate visual font/UI
+acceptance check. The helper's normal-repaint restoration was acknowledged.
+
+| Comparison | RX bytes / active B/s | Elapsed / trailing idle | Feed total / max | Draw total / max | p95 invalidate / lock timeouts | Outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| Initial 512 KiB | 164,010 / 3,069 | 300 s / not retained | not retained / 300 ms | 6.92 s / not retained | 305 ms / 11 | Single timeout |
+| Current row-rotation 512 KiB | 164,727 / 12,906 | 300 s / not retained | 7.41 s / 52 ms | 2.96 s / not retained | 240 ms / 66 | Single timeout |
+| New diagnostic normal 32 KiB | 24,719 / 9,875 | 90.140 s / 87.311 s | 1.123622 s / 51.057 ms | 0.697587 s / 7.871 ms | 305 ms / 7 | First trial timed out; zero completed trials |
+
+The final version-4 sample reports 26 select-ready polls and 26 actual reads,
+all positive, returning exactly 24,719 bytes. It reports 8,763 select timeouts
+and 8,763 skipped reads, **zero actual EAGAIN**, zero select errors/skipped
+selects/no-fd outcomes, zero channel read errors, and zero zero-byte/EOF-path
+returns. All EAGAIN-direction counts are zero because no actual EAGAIN occurred.
+Of 358 queue/window samples, 349 observed an idle socket with queued data.
+The last and maximum queue value were 24,608 bytes; the last receive window
+was 2,072,204 bytes against an initial 2,097,152. Heap free/largest were
+7,757,939/7,602,176 bytes. These are one partial timeout sample, not medians;
+9,875 B/s is not end-to-end throughput.
+
+This locates a concrete remaining opportunity in the local receive integration:
+queued channel data persists while the application declines to call libssh2.
+The sampled local SSH receive window is not exhausted. Remote producer state
+and TCP windows were not independently observed, and queued bytes include
+extended data, so this does not prove all remote output is complete or that
+every queued byte is standard output. It does justify testing standard-channel
+queue readiness before any remote configuration or terminal-storage change.
+Deferred repaint is not needed to resolve this observation, and the failed
+short gate does not justify the canonical 512 KiB run yet.
+
+No watchdog, panic, brownout, SSH-disconnect, receive-task-exit, read-error, or
+EOF marker occurred during the trial. Raw serial, schema-4 JSON, and a copy of
+the exact flashed diagnostic image are ignored under
+`_local/benchmarks/round3-normal32k-20260905T0034Z-retry/`. Host/source/build,
+flash/hash verification, the partial stream trial, and subjective UI acceptance
+remain separate evidence layers.
+
+### Buffered standard-channel candidate — awaiting physical validation
+
+After the diagnostic trial, the single behavior change admits a channel read
+when either TCP is readable or `libssh2_poll_channel_read(channel, 0) == 1`.
+The bundled function in `libssh2/src/session.c` only examines queued packet
+types; it does not poll the socket or receive data. Standard channel data is
+required; extended-only queues and negative probe errors do not qualify.
+Empty-idle passes still skip `channel_read` and retain the 10 ms delay;
+nonblocking mode, the 4 KiB/10 ms fairness yield, rendering, terminal semantics,
+UTF-8/ANSI, scrollback, storage, LCD/DMA, and SSH configuration are unchanged.
+A zero result from an eligible read follows the existing EOF path, without an
+idle EOF probe.
+
+Version-4 field meanings remain unchanged. `read_eagain_idle`, previously zero
+because no idle-socket read was attempted, now counts real EAGAIN after a
+queue-qualified idle-socket read. Read calls can exceed select-ready polls;
+`read_skipped_idle` still counts only synthetic idle results. The diagnostic
+artifact and this candidate must be compared by exact artifact hash.
+
+This candidate is not on the Pager yet. Fresh authorization bound to the new
+package and a fresh broker receipt are required before another Slot-A flash.
+Then rerun the normal 32 KiB gate, inspect queue drainage and idle/watchdog
+behavior, and advance to canonical 512 KiB only if the short trials complete.
+
+2026-09-04T17:39:46-07:00 — Candidate validation passed: terminal/wrapper tests, six Python parser tests, Python byte compilation, eleven-run host microbenchmarks, both target builds, both target packages with built-image byte equality, and `git diff --check`. Host medians were 5,110 screen-fill, 7,571 ASCII-scroll, 7,784 ANSI/UTF-8-scroll, and 20 viewport us/MiB; these validate the unchanged core and do not test the embedded receive loop. Evidence is under `_local/benchmarks/host/20260905T003613Z/` and `_local/benchmarks/round3-buffered-*-build.log`. No new receive-loop runtime/watchdog acceptance is claimed.
+
+- Candidate `tpager`: 1,770,160 bytes; SHA-256 `411605e11ed9599c18f776521ebc44a292e66a3a14fc0b39f821908b764a6c88`.
+- Candidate `tdeckplus`: 4,247,504 bytes; SHA-256 `fefd045184d863b5618488eb630fb98bcacf90dda771ed88cfd064b8f12a67c0`.

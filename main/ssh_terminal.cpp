@@ -7230,10 +7230,10 @@ void SSHTerminal::ssh_receive_task(void* param)
             !terminal->perf_repaint_deferred.load(std::memory_order_relaxed)) {
             terminal->flush_display_buffer();
         }
-        // Do not call channel_read() until the TCP socket is readable. On
-        // this ESP32 libssh2 port a nominally nonblocking channel can still
-        // spin inside channel_read while an idle shell has no output. That
-        // starves the input queue and eventually the task watchdog.
+        // Keep the idle-shell guard: this port has previously spun inside
+        // channel_read with no output, starving input and the watchdog.
+        // TCP readiness alone is insufficient, however: a prior read can
+        // drain TCP into libssh2's packet queue and return only our 1023 bytes.
         bool socket_readable = false;
         if (terminal->ssh_connected && terminal->ssh_socket >= 0) {
             fd_set readfds;
@@ -7269,7 +7269,12 @@ void SSHTerminal::ssh_receive_task(void* param)
             atomic_add_saturating(terminal->perf_window_samples, 1);
             if (!socket_readable && queued > 0) atomic_add_saturating(terminal->perf_idle_queued_samples, 1);
         }
-        const bool read_called = terminal->ssh_connected && socket_readable;
+        // This bundled API only inspects queued packet types (no socket I/O).
+        // extended=0 admits standard channel data only; errors are not ready.
+        // Never call channel_read on an empty idle channel or probe channel_eof.
+        const bool channel_buffered = terminal->ssh_connected && terminal->channel &&
+            !socket_readable && libssh2_poll_channel_read(terminal->channel, 0) == 1;
+        const bool read_called = terminal->ssh_connected && (socket_readable || channel_buffered);
         if (read_called) {
             atomic_add_saturating(terminal->perf_read_calls, 1);
             rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
@@ -7277,7 +7282,8 @@ void SSHTerminal::ssh_receive_task(void* param)
                 atomic_add_saturating(terminal->perf_read_positive, 1);
                 atomic_add_saturating(terminal->perf_read_bytes, static_cast<uint32_t>(rc));
             } else if (rc == LIBSSH2_ERROR_EAGAIN) {
-                atomic_add_saturating(terminal->perf_read_eagain_ready, 1);
+                atomic_add_saturating(socket_readable ? terminal->perf_read_eagain_ready
+                                                     : terminal->perf_read_eagain_idle, 1);
                 // Directions are meaningful immediately after real EAGAIN,
                 // not after a fabricated idle result or subsequent keepalive.
                 const int directions = libssh2_session_block_directions(terminal->session);
@@ -7300,15 +7306,13 @@ void SSHTerminal::ssh_receive_task(void* param)
         } else {
             rc = terminal->ssh_connected ? LIBSSH2_ERROR_EAGAIN : LIBSSH2_ERROR_SOCKET_DISCONNECT;
             if (rc == LIBSSH2_ERROR_EAGAIN) atomic_add_saturating(terminal->perf_read_skipped_idle, 1);
-            // read_eagain_idle stays zero under the unchanged readiness gate:
-            // no channel read is attempted after an idle select.
         }
         // Do not probe libssh2_channel_eof() on an idle transport.  The
         // ESP-IDF port can block inside that probe even after the session
         // and raw socket were configured nonblocking, which freezes this
         // task before it can service the input queue.  A zero-byte read on
-        // a readable socket is the equivalent close indication here.
-        const bool channel_eof = socket_readable && rc == 0;
+        // an eligible socket/queued-data read retains the close indication.
+        const bool channel_eof = read_called && rc == 0;
         if (rc > 0) {
             buffer[rc] = '\0';
             terminal->process_received_data(buffer, rc);
