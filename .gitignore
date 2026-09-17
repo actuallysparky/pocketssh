@@ -25,3 +25,7 @@ _local/
 !release/t-pager/*.bin
 !release/pagerdeck/
 !release/pagerdeck/*.bin
+
+# Local-only planning and operational history
+/journal.md
+/docs/project-plan.md
