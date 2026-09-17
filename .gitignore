@@ -19,3 +19,9 @@ _local/
 *.map
 *.o
 *.obj
+
+# Public release artifacts (intentionally checked in)
+!release/t-pager/
+!release/t-pager/*.bin
+!release/pagerdeck/
+!release/pagerdeck/*.bin

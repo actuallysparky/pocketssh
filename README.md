@@ -1,85 +1,52 @@
 # PocketSSH
 
-PocketSSH is a focused ESP-IDF fork of [0015/PocketSSH](https://github.com/0015/PocketSSH), maintained as one SSH-terminal application for LilyGO T-Pager and T-Deck Plus hardware. Shared terminal, SSH, Wi-Fi-profile, SD-transfer, and asset code lives here; target differences are selected at build time.
+PocketSSH is an ESP-IDF SSH terminal for LilyGO T-Pager and T-Deck Plus
+hardware. It keeps both targets in one source tree and selects the target at
+build time.
 
-## Targets and output
-
-| Target | Build command | Package command | Canonical artifact |
-| --- | --- | --- | --- |
-| T-Pager | `./build.sh tpager` | `./package.sh tpager` | `_local/packages/tpager/PocketSSH-TPager.bin` |
-| T-Deck Plus | `./build.sh tdeckplus` | `./package.sh tdeckplus` | `_local/packages/tdeckplus/PocketSSH-2.0.bin` |
-
-The wrappers derive the repository root, default `IDF_PATH` to the engineering ESP-IDF toolchain, and keep each target's generated configuration in its own ignored `_local/build/<target>` directory. `POCKETSSH_BUILD_DIR` and `POCKETSSH_PACKAGE_DIR` may override those locations for an explicitly isolated build.
-
-Run host-native terminal tests with:
+## Build
 
 ```bash
 ./tests/run_terminal_core_tests.sh
+./build.sh tpager
+./package.sh tpager
+./build.sh tdeckplus
+./package.sh tdeckplus
 ```
 
-Legacy packaging entry points under `misc/` remain as compatibility wrappers around `package.sh`.
+The wrappers place generated files under ignored `_local/`. They require an
+ESP-IDF 5.x environment; set `IDF_PATH` when it is not at the engineering
+workspace default.
 
-## Delivery boundary
+## Included releases
 
-T-Pager packages retain the `PocketSSH-TPager.bin` contract; T-Deck Plus packages retain `PocketSSH-2.0.bin`. Any SD staging or Launcher app-slot write remains a separate, identity-gated operation: inspect the live partition table immediately before a flash, write only the confirmed Launcher-managed application slot, and never replace the factory or Launcher partition during iteration.
+The checked-in release bundles contain the application binaries and SHA-256
+manifests:
 
-Building and packaging do not establish device runtime acceptance.
+- [`release/t-pager/`](release/t-pager/) — `PocketSSH-TPager.bin`
+- [`release/pagerdeck/`](release/pagerdeck/) — `PocketSSH-2.0.bin` for T-Deck Plus
 
-## T-Pager streaming benchmark
-
-The T-Pager exposes content-free terminal timing snapshots through its existing
-USB control channel:
-
-```text
-__pocketctl perf reset
-__pocketctl perf snapshot
-```
-
-Use `misc/perf_benchmark.py --port <usb-port>` to run three 512 KiB scrolling
-trials against an already connected POSIX SSH shell. If opening USB resets the
-Pager, pass `--connect-command 'connect <saved-alias>'`; that command is never
-written to the benchmark summary, and direct credentials are rejected. Each
-snapshot includes receive-to-invalidation p95, draw/lock timing, and heap
-headroom. Results and raw serial logs are stored only under ignored
-`_local/benchmarks/`. Benchmarking, like flashing, remains separate from source
-validation and requires the normal device identity gate. A timeout is recorded
-as a partial, content-free trial in `summary.json` and returns a nonzero exit
-status; it does not discard the final telemetry sample.
-
-Each snapshot also emits one paired `POCKETCTL core` line with content-free
-parser and scroll operation counts. `perf_benchmark.py --workload` accepts
-only fixed `screen-fill`, `ascii-scroll`, and `ansi-utf8-scroll` workloads;
-it never accepts arbitrary remote commands. Run deterministic host-only core
-microbenchmarks with `./tests/run_terminal_core_benchmarks.sh`; results are
-also ignored under `_local/benchmarks/host/`.
-
-The paired `POCKETCTL transport` line adds socket-poll, channel-EAGAIN, flush,
-and display-update timing counters. For lab diagnosis only, T-Pager supports
-`__pocketctl perf repaint normal|deferred`; deferred mode continues SSH and
-terminal-core processing but defers receive-loop repainting. The benchmark
-helper exposes it as `--repaint-mode` and always restores normal mode after a
-trial or timeout. It is not an interactive terminal setting.
-
-Benchmark summary schema 6 requires both the byte threshold and a sampled empty
-libssh2 queue with at least one second of receive idle before starting another
-trial. This avoids overlapping PTY-expanded output with the next measurement;
-older byte-threshold-only results are not full-drain comparisons. Version-4
-transport firmware is required to prove drainage, although legacy telemetry
-remains parseable. `host_elapsed_ms` includes the final quiet period; `rx_bps`
-remains an active-window metric. Queue/receive quiescence does not report the
-remote process exit status. Optionally use `--idle-probe-seconds 45` to sample
-an idle session after completed trials and then verify a fixed `screen-fill`
-workload response in that same session. Mid-run boot/reset, watchdog, panic, brownout, SSH EOF,
-read-error, and receive-task exit markers reject the run and stop further
-workloads. Faults and interruptions retain available evidence in the summary;
-exit codes are 2 for timeout, 3 for fault, and 130 for interruption.
+These are app images. Building or downloading them does not authorize flashing;
+Launcher slot and device identity checks remain a separate deployment step.
 
 ## Documentation
 
-- `docs/pocketssh-2.0-functional-spec.md` — T-Deck Plus terminal behavior and delivery contract.
-- `docs/pocketssh-2.0-implementation-requirements.md` — implementation requirements.
-- `docs/enhancements-requirements.md` — stored-host, Wi-Fi-profile, and known-host expectations.
-- `docs/project-plan.md` — original T-Pager porting plan and hardware rationale.
-- `journal.md` — append-only engineering and delivery evidence.
+- [`docs/pocketssh-2.0-functional-spec.md`](docs/pocketssh-2.0-functional-spec.md)
+- [`docs/pocketssh-2.0-implementation-requirements.md`](docs/pocketssh-2.0-implementation-requirements.md)
 
-Original upstream authors and maintainers retain full credit for PocketSSH.
+## Credits and licenses
+
+PocketSSH is forked from [0015/PocketSSH](https://github.com/0015/PocketSSH);
+its authors and maintainers retain full credit for the upstream project.
+
+The Pagerdeck/T-Deck Plus delivery workflow is designed for
+[bmorcelli/Launcher](https://github.com/bmorcelli/Launcher), whose authors
+retain credit for Launcher. This repository does not include Launcher itself.
+
+The firmware also uses [Espressif ESP-IDF](https://github.com/espressif/esp-idf),
+[esp-bsp](https://github.com/espressif/esp-bsp),
+[LVGL](https://github.com/lvgl/lvgl), and
+[libssh2_esp](https://github.com/skuodi/libssh2_esp); see `dependencies.lock` and
+the component manifests for the pinned dependencies and their licenses.
+
+This repository's license is in [`LICENSE`](LICENSE).
