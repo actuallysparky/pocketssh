@@ -26,9 +26,6 @@ manifests:
 - [`release/t-pager/`](release/t-pager/) — `PocketSSH-TPager.bin`
 - [`release/pagerdeck/`](release/pagerdeck/) — `PocketSSH-2.0.bin` for T-Deck Plus
 
-These are app images. Building or downloading them does not authorize flashing;
-Launcher slot and device identity checks remain a separate deployment step.
-
 ## Documentation
 
 - [`docs/pocketssh-2.0-functional-spec.md`](docs/pocketssh-2.0-functional-spec.md)
